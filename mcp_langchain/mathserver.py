@@ -17,4 +17,6 @@ def Multi(a:int, b:int) -> int:
     return a * b
 
 if __name__=="__main__":
-    mcp.run(transport="stdio")
+    mcp.run(transport="stdio") 
+
+# stdio use standard input/output (stdio and stdout) to receive and response to tool function calls
