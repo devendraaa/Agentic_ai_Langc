@@ -1,0 +1,24 @@
+LLM Input Design
+│
+├── Prompt Engineering
+│   ├── Persona
+│   ├── Task
+│   ├── Constraints
+│   ├── Output Format
+│   └── Few-shot Examples
+│
+├── Context Engineering
+│   ├── RAG Documents
+│   ├── Memory
+│   ├── Tool Results
+│   ├── Conversation History
+│   └── Context Selection
+│
+├── Validation
+│   ├── Pydantic
+│   ├── Structured Output
+│   └── Output Parser
+│
+└── Orchestration
+    ├── LCEL → local/linear pipelines
+    └── LangGraph → state, branching, loops, agents
