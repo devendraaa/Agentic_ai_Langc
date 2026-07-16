@@ -1,0 +1,83 @@
+Understanding Key Concepts
+Before we begin, let's understand the three key concepts in this lab.
+
+HTTP Transport
+What it is:
+
+Remote server runs independently (not as subprocess)
+Communication via bidirectional HTTP transport
+Server can handle multiple clients simultaneously
+Stateful or stateless connections
+When to use:
+
+Production deployments
+Remote/cloud services
+Microservices architectures
+Shared server resources
+Multi-client scenarios
+vs STDIO Transport:
+
+STDIO: Local subprocess, low latency, simple debugging
+HTTP: Remote process, network latency, production-ready
+Filesystem Roots
+What they are:
+
+A client capability that exposes allowed directories to servers
+Client declares which filesystem locations are accessible
+Server requests the list via roots/list JSON-RPC method
+Server validates file operations stay within exposed roots
+MCP Protocol Flow:
+
+Client initializes and declares roots capability
+Server sends roots/list request to client
+Client responds with list of allowed file:// URIs
+Server checks all file operations against these URIs
+Client can notify server when roots change (optional)
+Example Root Definition:
+
+json
+
+{
+  "uri": "file:///home/user/mcp_advanced_lab/workspace",
+  "name": "Workspace"
+}
+Security benefit:
+
+Client maintains full control over filesystem access
+Server cannot access files outside exposed roots
+Essential for enterprise deployments with sensitive data
+Prevents path traversal and unauthorized access
+Sampling (Server-Initiated LLM Requests)
+What it is:
+
+MCP protocol feature where servers request LLM completions from clients
+Uses JSON-RPC method: sampling/createMessage
+Client maintains control over model selection, API keys, and costs
+Enables agentic behavior without servers needing LLM access
+MCP Protocol Flow:
+
+Client initializes and declares sampling capability
+Server sends sampling/createMessage JSON-RPC request with:
+Messages array (conversation history)
+Model preferences (optional)
+System prompt (optional)
+Max tokens (required)
+Client shows approval dialog to user (human-in-the-loop)
+If approved, client calls LLM with provided parameters
+Client sends JSON-RPC response with LLM result
+Server uses result to complete its operation
+Benefits:
+
+Server doesn't need LLM API keys
+Client controls model selection and costs
+Privacy maintained at client side
+Standardized protocol for LLM requests
+Security consideration:
+
+MUST have human-in-the-loop approval
+User sees server's prompt before LLM execution
+Prevents unauthorized LLM usage
+Client can reject any sampling request
+
+
+
