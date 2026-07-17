@@ -83,6 +83,16 @@ retriever = vectorsto.as_retriever(search_kwargs={"k": 4})
 # for i in ret:
 #     print("="*60)
 #     print(i.page_content)
+from pydantic import BaseModel, Field
+
+class JudgeResponse(BaseModel):
+
+    enough_context: bool = Field(description="True if the retrieved context is sufficient.")
+
+    reason: str = Field(description="Explain why the context is or isn't sufficient.")
+
+    missing_info: str = Field(description="Information still needed.")
+
 
 class GraphState(TypedDict):
 
@@ -99,6 +109,10 @@ class GraphState(TypedDict):
     max_hops: int
 
     enough_context: bool
+
+    missing_info: str
+
+    judge_reason: str
 
 @tool
 def retrieve_documents(query: str) -> str:
@@ -198,15 +212,14 @@ def judge_node(state: GraphState):
         context=context
     )
 
-    response = llm.invoke(prompt)
+    # response = llm.invoke(prompt)
+    structured_llm = llm.with_structured_output(JudgeResponse)
 
-    decision = response.content.strip().upper()
+    response = structured_llm.invoke(prompt)
 
-    # state["enough_context"] = decision.startswith("YES")
-    if state['retrieval_count'] == 1:
-        state['enough_context'] = False
-    else:
-        state['enough_context'] = True
+    # decision = response.content.strip().upper()
+
+    state["enough_context"] = response.enough_context
 
     return state
 
