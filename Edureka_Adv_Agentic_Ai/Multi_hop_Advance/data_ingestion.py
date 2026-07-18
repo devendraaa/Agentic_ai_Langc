@@ -17,33 +17,34 @@ print(pdf_folder)
 def create_collection(pdf_folder, persist_dir: str, embedding):
     documents = []
     try:
-        for pdf in pdf_folder.glob("*.pdf"):
-            print(f"name of pdf : {pdf.name}")
-            loader = PyPDFLoader(str(pdf))
-            docs = loader.load()
+        if not os.Path.exists(persist_dir):
 
-            for doc in docs:
-                doc.metadata["book"] = pdf.stem
+            for pdf in pdf_folder.glob("*.pdf"):
+                print(f"name of pdf : {pdf.name}")
+                loader = PyPDFLoader(str(pdf))
+                docs = loader.load()
 
-            documents.extend(docs)
+                for doc in docs:
+                    doc.metadata["book"] = pdf.stem
 
-            print(len(documents))
-            print("document load successfully")
+                documents.extend(docs)
 
-        splitter = RecursiveCharacterTextSplitter(
-                chunk_size = 500,
-                chunk_overlap=150
-                )
+                print(len(documents))
+                print("document load successfully")
 
-        chunks = splitter.split_documents(documents)       
-        print("document chunks created: ",len(chunks))
+            splitter = RecursiveCharacterTextSplitter(
+                    chunk_size = 500,
+                    chunk_overlap=150
+                    )
 
-        if not os.path.exists(persist_dir):
+            chunks = splitter.split_documents(documents)       
+            print("document chunks created: ",len(chunks))
+
             vectorstore = Chroma.from_documents(
-                documents = chunks,
-                persist_directory=persist_dir,
-                embedding=embedding
-            )
+                    documents = chunks,
+                    persist_directory=persist_dir,
+                    embedding=embedding
+                )
         else:
             print("already vector db created for this pdf")
 

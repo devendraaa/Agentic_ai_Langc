@@ -1,5 +1,6 @@
 from typing import TypedDict, List
 from langchain_core.documents import Document
+import ftfy
 import os
 from dotenv import load_dotenv
 from langchain_google_genai import ChatGoogleGenerativeAI
@@ -9,9 +10,11 @@ from langchain_core.tools import tool
 from langgraph.graph import StateGraph, START, END
 from langchain_core.messages import HumanMessage
 from langchain_groq import ChatGroq
-from data_ingestion import call_data_inge
+# from data_ingestion import call_data_inge
 from langchain_huggingface import HuggingFaceEmbeddings
 from langchain_chroma import Chroma
+from typing import Literal
+from pydantic import BaseModel, Field
 
 load_dotenv()
 
@@ -24,8 +27,16 @@ llm = ChatGroq(
     model="llama-3.3-70b-versatile"
 )
 
-# vectorsto = call_data_inge()
-# retriever = vectorsto.as_retriever(search_kwargs={"k": 4})
+class RouterResponse(BaseModel):
+    collection: Literal[
+        "docker",
+        "aws",
+        "ai_agent",
+        "langgraph"
+        ]
+    reason: str
+
+router_llm = llm.with_structured_output(RouterResponse)
 
 embeddings = HuggingFaceEmbeddings(
     model_name="sentence-transformers/all-MiniLM-L6-v2"
@@ -61,16 +72,14 @@ retrievers = {
         search_kwargs={"k":2}
     ),
 
-    "kubernetes": ai_agent_db.as_retriever(
+    "ai_agent": ai_agent_db.as_retriever(
         search_kwargs={"k":2}
     ),
 
-    "linux": langgraph_db.as_retriever(
+    "langgraph": langgraph_db.as_retriever(
         search_kwargs={"k":2}
     ),
 }
-
-from pydantic import BaseModel, Field
 
 class JudgeResponse(BaseModel):
 
@@ -105,58 +114,39 @@ class GraphState(TypedDict):
 
     collection: str
 
-@tool
-def retrieve_documents(query: str) -> str:
-    """
-    Search enterprise knowledge base.
-
-    Use whenever information is needed.
-    """
-
-    docs = retriever.invoke(query)
-
-    return docs
-
 
 JUDGE_PROMPT = """
-        You are an expert evaluator.
+You are an expert evaluator.
 
-        Question:
-        {question}
+Question:
+{question}
 
-        Retrieved Context:
-        {context}
+Retrieved Context:
+{context}
 
-        Determine whether the retrieved context contains enough information
-        to completely answer the user's question.
+Determine whether the retrieved context is sufficient to answer the question.
 
-        Respond ONLY with:
+If not, identify what information is still missing.
 
-        YES
-
-        or
-
-        NO
+Return your evaluation.
 """
-
 
 REWRITE_QUERY_PROMPT = """
-        You are an expert search query writer.
+    You are an expert search query writer.
 
-        Original Question:
-        {question}
+    Original Question:
+    {question}
 
-        Current Retrieved Context:
-        {context}
+    Retrieved Context:
+    {context}
 
-        The retrieved context is insufficient.
+    Missing Information:
+    {missing_info}
 
-        Generate ONE improved search query that is likely to retrieve
-        the missing information.
+    Generate ONE improved search query to retrieve ONLY the missing information.
 
-        Return ONLY the search query.
+    Return ONLY the search query.
 """
-
 
 ANSWER_PROMPT = """
         You are an enterprise AI assistant.
@@ -175,6 +165,63 @@ ANSWER_PROMPT = """
         say you don't have enough information.
 """
 
+ROUTER_PROMPT = """
+    You are an expert routing agent.
+
+    Available collections:
+
+    1. docker
+    - Docker
+    - Docker Compose
+
+    2. aws
+    - EC2
+    - IAM
+    - S3
+    - Lambda
+
+    3. ai_agent
+    - AI Agents
+    - CrewAI
+    - LangChain Agents
+    - MCP
+
+    4. langgraph
+    - LangGraph
+    - StateGraph
+    - Nodes
+
+    Question:
+    {question}
+
+    Already searched:
+    {visited}
+
+    Choose the BEST collection.
+
+    If the required information is likely to be in a collection that has NOT been searched yet,
+    prefer that collection.
+
+    Return ONLY one collection name.
+"""
+
+def router_node(state: GraphState):
+
+    prompt = ROUTER_PROMPT.format(
+        question=state["current_query"],
+        visited=", ".join(state["visited_collections"])
+    )
+
+    response = router_llm.invoke(prompt)
+    print("Routing Reason:", response.reason)
+
+    state["collection"] = response.collection
+
+    if response.collection not in state["visited_collections"]:
+        state["visited_collections"].append(response.collection)
+
+    return state
+
 def retrieve_node(state: GraphState):
 
     print("===============Retrieval Node===============")
@@ -186,10 +233,14 @@ def retrieve_node(state: GraphState):
 
     print(f"Retrieved {len(docs)} documents")
 
-    state["documents"].extend(docs)
+    # state["documents"].extend(docs)
+    state["documents"] = docs
     state["retrieval_count"] += 1
+    print(f"Collection: {state['collection']}")
 
     return state
+
+judge_llm = llm.with_structured_output(JudgeResponse)
 
 def judge_node(state: GraphState):
     print("===============Judge Node===============")
@@ -199,20 +250,29 @@ def judge_node(state: GraphState):
         for doc in state["documents"]
     )
 
-    prompt = JUDGE_PROMPT.format(
+    context = ftfy.fix_text(context)
 
+    print("content length :", len(context) )
+    print("documents length: ", len(state["documents"]))
+
+    prompt = JUDGE_PROMPT.format(
         question=state["question"],
-        context=context
+        context=context,
+        missing_info=state["missing_info"]
     )
 
     # response = llm.invoke(prompt)
-    structured_llm = llm.with_structured_output(JudgeResponse)
 
-    response = structured_llm.invoke(prompt)
+    print("=" * 80)
+    print(prompt)
+    print("=" * 80)
+    response = judge_llm.invoke(prompt)
 
     # decision = response.content.strip().upper()
 
     state["enough_context"] = response.enough_context
+    state["judge_reason"] = response.reason
+    state["missing_info"] = response.missing_info
 
     return state
 
@@ -226,7 +286,8 @@ def rewrite_query_node(state: GraphState):
 
     prompt = REWRITE_QUERY_PROMPT.format(
         question=state["question"],
-        context=context
+        context=context,
+        missing_info=state['missing_info']
     )
 
     response = llm.invoke(prompt)
@@ -279,7 +340,12 @@ builder.add_node("rewrite",rewrite_query_node)
 
 builder.add_node("answer",answer_node)
 
-builder.add_edge(START,"retrieve")
+# builder.add_edge(START,"retrieve")
+builder.add_node("router", router_node)
+
+builder.add_edge(START, "router")
+
+builder.add_edge("router", "retrieve")
 
 builder.add_edge("retrieve", "judge")
 
@@ -296,7 +362,7 @@ builder.add_conditional_edges(
 
 )
 
-builder.add_edge("rewrite","retrieve")
+builder.add_edge("rewrite", "router")
 builder.add_edge("answer",END)
 
 graph = builder.compile()
