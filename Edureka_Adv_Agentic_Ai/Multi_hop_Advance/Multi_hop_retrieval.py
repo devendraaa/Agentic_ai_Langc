@@ -3,16 +3,15 @@ from langchain_core.documents import Document
 import os
 from dotenv import load_dotenv
 from langchain_google_genai import ChatGoogleGenerativeAI
-from langchain_chroma import Chroma
 from langchain_google_genai import GoogleGenerativeAIEmbeddings
 from langchain_google_genai import ChatGoogleGenerativeAI
 from langchain_core.tools import tool
 from langgraph.graph import StateGraph, START, END
 from langchain_core.messages import HumanMessage
-from langchain_community.document_loaders import PyPDFLoader
-from langchain_text_splitters import RecursiveCharacterTextSplitter
 from langchain_groq import ChatGroq
+from data_ingestion import call_data_inge
 from langchain_huggingface import HuggingFaceEmbeddings
+from langchain_chroma import Chroma
 
 load_dotenv()
 
@@ -25,64 +24,52 @@ llm = ChatGroq(
     model="llama-3.3-70b-versatile"
 )
 
+# vectorsto = call_data_inge()
+# retriever = vectorsto.as_retriever(search_kwargs={"k": 4})
+
 embeddings = HuggingFaceEmbeddings(
     model_name="sentence-transformers/all-MiniLM-L6-v2"
 )
 
-path = "docker.pdf"
+ai_agent_db = Chroma(
+                    persist_directory="./db/ai_agent",
+                    embedding_function=embeddings
+)
 
-def document_load(path):
-    try:
-        loader = PyPDFLoader(path)
-        documents = loader.load()
-        print("document load successfully")
+docker_db = Chroma(
+                    persist_directory="./db/docker",
+                    embedding_function=embeddings
+)
 
-        return documents
-    except Exception as e:
-        print(f"load documents Error : {e}")
+aws_db = Chroma(
+                    persist_directory="./db/aws",
+                    embedding_function=embeddings
+)
 
-def vector_st(documents):
+langgraph_db = Chroma(
+                    persist_directory="./db/langgraph",
+                    embedding_function=embeddings
+)
 
-    try:
-        splitter = RecursiveCharacterTextSplitter(
-            chunk_size = 500,
-            chunk_overlap=150
-        )
+retrievers = {
 
-        chunks = splitter.split_documents(documents)
+    "docker": docker_db.as_retriever(
+        search_kwargs={"k":2}
+    ),
 
-        print(len(chunks))
+    "aws": aws_db.as_retriever(
+        search_kwargs={"k":2}
+    ),
 
+    "kubernetes": ai_agent_db.as_retriever(
+        search_kwargs={"k":2}
+    ),
 
-        if os.path.exists("./db"):
-            vectorstore = Chroma(
-                persist_directory="./db",
-                embedding_function=embeddings
-            )
-        else:
-            vectorstore = Chroma.from_documents(
-                documents = chunks,
-                persist_directory="./db",
-                embedding=embeddings
-            )
-        
-        print("documents store to vectore store successfuly")
+    "linux": langgraph_db.as_retriever(
+        search_kwargs={"k":2}
+    ),
+}
 
-        return vectorstore
-    
-    except Exception as e:
-        print(f"vector store Error : {e}")
-
-text = document_load(path=path)
-vectorsto = vector_st(text)
-retriever = vectorsto.as_retriever(search_kwargs={"k": 4})
-
-# query = "what is docker"
-# ret = retriever.invoke(query)
-
-# for i in ret:
-#     print("="*60)
-#     print(i.page_content)
 from pydantic import BaseModel, Field
 
 class JudgeResponse(BaseModel):
@@ -97,6 +84,8 @@ class JudgeResponse(BaseModel):
 class GraphState(TypedDict):
 
     question: str
+
+    visited_collections: list[str]
 
     current_query: str
 
@@ -113,6 +102,8 @@ class GraphState(TypedDict):
     missing_info: str
 
     judge_reason: str
+
+    collection: str
 
 @tool
 def retrieve_documents(query: str) -> str:
@@ -189,7 +180,9 @@ def retrieve_node(state: GraphState):
     print("===============Retrieval Node===============")
     print(f"\nSearching: {state['current_query']}")
 
-    docs = retrieve_documents.invoke(state["current_query"])
+    retriver = retrievers[state["collection"]]
+
+    docs = retriver.invoke(state["current_query"])
 
     print(f"Retrieved {len(docs)} documents")
 
