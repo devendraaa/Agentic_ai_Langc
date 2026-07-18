@@ -131,38 +131,45 @@ If not, identify what information is still missing.
 Return your evaluation.
 """
 
+class RewriteResponse(BaseModel):
+    query: str
+
 REWRITE_QUERY_PROMPT = """
-    You are an expert search query writer.
+    You are a search query optimizer.
 
     Original Question:
     {question}
 
-    Retrieved Context:
+    Current Context:
     {context}
 
     Missing Information:
     {missing_info}
 
-    Generate ONE improved search query to retrieve ONLY the missing information.
+    Generate exactly ONE search query.
 
-    Return ONLY the search query.
+    Rules:
+    - Return only the search query.
+    - No explanation.
+    - No markdown.
+    - No examples.
+    - No additional text.
 """
 
 ANSWER_PROMPT = """
-        You are an enterprise AI assistant.
+    You are an expert AI assistant.
 
-        Answer the question ONLY using the retrieved context.
+    Using the retrieved context, write a concise answer in your own words.
 
-        Question:
-        {question}
+    Do NOT copy text verbatim.
+    Do NOT include partial paragraphs.
+    Do NOT include copyright text.
 
-        Context:
-        {context}
+    Question:
+    {question}
 
-        Provide a detailed answer.
-
-        If the answer cannot be found,
-        say you don't have enough information.
+    Context:
+    {context}
 """
 
 ROUTER_PROMPT = """
@@ -231,7 +238,7 @@ def retrieve_node(state: GraphState):
 
     docs = retriver.invoke(state["current_query"])
 
-    print(f"Retrieved {len(docs)} documents")
+    # print(f"Retrieved {len(docs)} documents")
 
     # state["documents"].extend(docs)
     state["documents"] = docs
@@ -261,14 +268,8 @@ def judge_node(state: GraphState):
         missing_info=state["missing_info"]
     )
 
-    # response = llm.invoke(prompt)
-
-    print("=" * 80)
-    print(prompt)
-    print("=" * 80)
+    
     response = judge_llm.invoke(prompt)
-
-    # decision = response.content.strip().upper()
 
     state["enough_context"] = response.enough_context
     state["judge_reason"] = response.reason
@@ -290,9 +291,11 @@ def rewrite_query_node(state: GraphState):
         missing_info=state['missing_info']
     )
 
-    response = llm.invoke(prompt)
+    rewrite_llm = llm.with_structured_output(RewriteResponse)
 
-    state["current_query"] = response.content
+    response = rewrite_llm.invoke(prompt)
+
+    state["current_query"] = response.query
 
     return state
 
@@ -311,8 +314,6 @@ def answer_node(state: GraphState):
     )
 
     response = llm.invoke(prompt)
-    print(response)
-    print(response.content)
     state["answer"] = response.content
 
     return state

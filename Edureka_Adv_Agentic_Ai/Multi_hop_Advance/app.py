@@ -12,7 +12,7 @@ state = {
 
     "retrieval_count": 0,
 
-    "max_hops": 3,
+    "max_hops": 5,
 
     "enough_context": False,
 
