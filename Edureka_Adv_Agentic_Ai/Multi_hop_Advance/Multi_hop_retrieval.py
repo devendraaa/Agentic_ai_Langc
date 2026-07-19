@@ -81,6 +81,13 @@ retrievers = {
     ),
 }
 
+ALL_COLLECTIONS = [
+    "docker",
+    "aws",
+    "ai_agent",
+    "langgraph"
+]
+
 class JudgeResponse(BaseModel):
 
     enough_context: bool = Field(description="True if the retrieved context is sufficient.")
@@ -93,6 +100,8 @@ class JudgeResponse(BaseModel):
 class GraphState(TypedDict):
 
     question: str
+
+    remaining_collections: list[str]   # <-- ADD THIS
 
     visited_collections: list[str]
 
@@ -134,14 +143,15 @@ Return your evaluation.
 class RewriteResponse(BaseModel):
     query: str
 
+from langchain_core.output_parsers import PydanticOutputParser
+
+parser = PydanticOutputParser(pydantic_object=RewriteResponse)
+
 REWRITE_QUERY_PROMPT = """
     You are a search query optimizer.
 
     Original Question:
     {question}
-
-    Current Context:
-    {context}
 
     Missing Information:
     {missing_info}
@@ -156,20 +166,27 @@ REWRITE_QUERY_PROMPT = """
     - No additional text.
 """
 
+
+
 ANSWER_PROMPT = """
-    You are an expert AI assistant.
+You are an expert AI assistant.
 
-    Using the retrieved context, write a concise answer in your own words.
+Answer the user's question using the retrieved information.
 
-    Do NOT copy text verbatim.
-    Do NOT include partial paragraphs.
-    Do NOT include copyright text.
+Rules:
 
-    Question:
-    {question}
+- Write the answer entirely in your own words.
+- Never copy complete sentences from the context.
+- Ignore copyright notices, headers, page numbers, chapter titles, and incomplete fragments.
+- If multiple documents provide complementary information, combine them into one coherent explanation.
+- Structure the answer in logical steps.
+- Do not mention the retrieved context.
 
-    Context:
-    {context}
+Question:
+{question}
+
+Context:
+{context}
 """
 
 ROUTER_PROMPT = """
@@ -214,18 +231,60 @@ ROUTER_PROMPT = """
 
 def router_node(state: GraphState):
 
-    prompt = ROUTER_PROMPT.format(
-        question=state["current_query"],
-        visited=", ".join(state["visited_collections"])
-    )
+    remaining = [
+        c
+        for c in ALL_COLLECTIONS
+        if c not in state["visited_collections"]
+    ]
+
+    state["remaining_collections"] = remaining
+
+    if not remaining:
+        return state
+
+    prompt = f"""
+    You are a routing agent.
+
+    Available collections:
+    {", ".join(remaining)}
+
+    IMPORTANT:
+    You MUST choose exactly one collection from the Available collections list.
+    Choosing any collection not in the list is an error.
+
+    Question:
+    {state["current_query"]}
+    """
+
+    print("=" * 50)
+    print("Remaining before routing:", remaining)
+    print("Visited before routing:", state["visited_collections"])
 
     response = router_llm.invoke(prompt)
+
+    if response.collection not in remaining:
+        raise Exception(
+            f"""
+    INVALID ROUTER OUTPUT
+
+    Remaining : {remaining}
+
+    Returned  : {response.collection}
+    """
+        )
+
+    print("LLM selected:", response.collection)
+
     print("Routing Reason:", response.reason)
 
     state["collection"] = response.collection
 
-    if response.collection not in state["visited_collections"]:
-        state["visited_collections"].append(response.collection)
+    
+
+    state["visited_collections"].append(response.collection)
+
+    print("Visited:", state["visited_collections"])
+    print("Remaining:", remaining)
 
     return state
 
@@ -238,10 +297,16 @@ def retrieve_node(state: GraphState):
 
     docs = retriver.invoke(state["current_query"])
 
-    # print(f"Retrieved {len(docs)} documents")
+    existing_docs = {
+        doc.page_content: doc
+        for doc in state["documents"]
+    }
 
-    # state["documents"].extend(docs)
-    state["documents"] = docs
+    for doc in docs:
+        existing_docs[doc.page_content] = doc
+
+    state["documents"] = list(existing_docs.values())
+
     state["retrieval_count"] += 1
     print(f"Collection: {state['collection']}")
 
@@ -287,15 +352,17 @@ def rewrite_query_node(state: GraphState):
 
     prompt = REWRITE_QUERY_PROMPT.format(
         question=state["question"],
-        context=context,
         missing_info=state['missing_info']
     )
 
-    rewrite_llm = llm.with_structured_output(RewriteResponse)
+    # rewrite_llm = llm.with_structured_output(RewriteResponse)
 
-    response = rewrite_llm.invoke(prompt)
+    # response = rewrite_llm.invoke(prompt)
+    response = llm.invoke(prompt)
+    # print("this is response text from rewrite query node: /n", response.content)
 
-    state["current_query"] = response.query
+    state["current_query"] = response.content.strip()
+    print(state["current_query"])
 
     return state
 
@@ -319,13 +386,13 @@ def answer_node(state: GraphState):
     return state
 
 def route_after_judge(state: GraphState):
-    print("===============Route After Node===============")
 
-    # LLM says context is enough
     if state["enough_context"]:
         return "answer"
 
-    # Stop infinite loops
+    if not state["remaining_collections"]:
+        return "answer"
+
     if state["retrieval_count"] >= state["max_hops"]:
         return "answer"
 
