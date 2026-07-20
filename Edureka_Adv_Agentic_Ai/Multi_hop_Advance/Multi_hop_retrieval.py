@@ -3,20 +3,21 @@ from langchain_core.documents import Document
 import ftfy
 import os
 from dotenv import load_dotenv
-from langchain_google_genai import ChatGoogleGenerativeAI
-from langchain_google_genai import GoogleGenerativeAIEmbeddings
-from langchain_google_genai import ChatGoogleGenerativeAI
 from langchain_core.tools import tool
 from langgraph.graph import StateGraph, START, END
 from langchain_core.messages import HumanMessage
 from langchain_groq import ChatGroq
-# from data_ingestion import call_data_inge
 from langchain_huggingface import HuggingFaceEmbeddings
 from langchain_chroma import Chroma
 from typing import Literal
 from pydantic import BaseModel, Field
+from sentence_transformers import CrossEncoder
 
 load_dotenv()
+
+reranker = CrossEncoder(
+    "cross-encoder/ms-marco-MiniLM-L-6-v2"
+)
 
 api_key = os.getenv("GOOGLE_API_KEY")
 
@@ -65,19 +66,19 @@ langgraph_db = Chroma(
 retrievers = {
 
     "docker": docker_db.as_retriever(
-        search_kwargs={"k":2}
+        search_kwargs={"k":4}
     ),
 
     "aws": aws_db.as_retriever(
-        search_kwargs={"k":2}
+        search_kwargs={"k":4}
     ),
 
     "ai_agent": ai_agent_db.as_retriever(
-        search_kwargs={"k":2}
+        search_kwargs={"k":4}
     ),
 
     "langgraph": langgraph_db.as_retriever(
-        search_kwargs={"k":2}
+        search_kwargs={"k":4}
     ),
 }
 
@@ -125,19 +126,25 @@ class GraphState(TypedDict):
 
 
 JUDGE_PROMPT = """
-You are an expert evaluator.
+    You are evaluating retrieved knowledge.
 
-Question:
-{question}
+    Question:
+    {question}
 
-Retrieved Context:
-{context}
+    Context:
+    {context}
 
-Determine whether the retrieved context is sufficient to answer the question.
+    Your job:
 
-If not, identify what information is still missing.
+    1. Decide whether the context is sufficient to answer the user's question.
 
-Return your evaluation.
+    2. If the answer can be written with reasonable confidence,
+    return enough_context=True.
+
+    3. Only return enough_context=False if there is a significant missing concept
+    that would materially improve the answer.
+
+    Do not request additional information if the answer can already be written.
 """
 
 class RewriteResponse(BaseModel):
@@ -166,10 +173,15 @@ REWRITE_QUERY_PROMPT = """
     - No additional text.
 """
 
-
-
 ANSWER_PROMPT = """
 You are an expert AI assistant.
+
+If multiple retrieved chunks describe the same step,
+combine them into one concise explanation.
+
+Do not repeat the same workflow or instructions.
+
+Remove redundant information before answering.
 
 Answer the user's question using the retrieved information.
 
@@ -297,13 +309,23 @@ def retrieve_node(state: GraphState):
 
     docs = retriver.invoke(state["current_query"])
 
-    existing_docs = {
-        doc.page_content: doc
-        for doc in state["documents"]
-    }
+    existing_docs = {}
+
+    for doc in state["documents"]:
+        key = (
+            doc.metadata.get("book"),
+            doc.metadata.get("page"),
+            doc.page_content
+        )
+        existing_docs[key] = doc
 
     for doc in docs:
-        existing_docs[doc.page_content] = doc
+        key = (
+            doc.metadata.get("book"),
+            doc.metadata.get("page"),
+            doc.page_content
+        )
+        existing_docs[key] = doc
 
     state["documents"] = list(existing_docs.values())
 
@@ -313,6 +335,60 @@ def retrieve_node(state: GraphState):
     return state
 
 judge_llm = llm.with_structured_output(JudgeResponse)
+
+def rerank_node(state: GraphState):
+
+    print("===============Rerank Node===============")
+
+    query = state["question"]
+
+    docs = state["documents"]
+
+    if len(docs) <= 1:
+        return state
+
+    # Create (query, document) pairs
+    pairs = [
+        (query, doc.page_content)
+        for doc in docs
+    ]
+
+    # Score every document
+    scores = reranker.predict(pairs)
+
+    # Sort by score (highest first)
+    ranked_docs = sorted(
+        zip(scores, docs),
+        key=lambda x: x[0],
+        reverse=True
+    )
+
+    print("\nTop Reranked Documents\n")
+
+    for score, doc in ranked_docs:
+        print(f"Score: {score:.4f}")
+        print(doc.metadata)
+        print("-" * 60)
+
+    # Keep only the best 5
+    best_docs = []
+
+    seen_books = set()
+
+    for score, doc in ranked_docs:
+
+        book = doc.metadata["book"]
+
+        if book not in seen_books:
+            best_docs.append(doc)
+            seen_books.add(book)
+
+        if len(best_docs) == 5:
+            break
+
+        state["documents"] = best_docs
+
+    return state
 
 def judge_node(state: GraphState):
     print("===============Judge Node===============")
@@ -374,6 +450,12 @@ def answer_node(state: GraphState):
         for doc in state["documents"]
     )
 
+    for i, doc in enumerate(state["documents"]):
+        print("=" * 60)
+        print(f"Chunk {i+1}")
+        print(doc.metadata)
+        print(doc.page_content[:500])
+
     prompt = ANSWER_PROMPT.format(
 
         question=state["question"],
@@ -388,28 +470,33 @@ def answer_node(state: GraphState):
 def route_after_judge(state: GraphState):
 
     if state["enough_context"]:
-        return "answer"
+        return "rerank"
 
     if not state["remaining_collections"]:
-        return "answer"
+        return "rerank"
 
     if state["retrieval_count"] >= state["max_hops"]:
-        return "answer"
+        return "rerank"
 
     return "rewrite"
 
 builder = StateGraph(GraphState)
 
+builder.add_node("router", router_node)
+
 builder.add_node("retrieve",retrieve_node)
 
-builder.add_node("judge",judge_node)
+builder.add_node("judge", judge_node)
+
+builder.add_node("rerank",rerank_node)
 
 builder.add_node("rewrite",rewrite_query_node)
 
 builder.add_node("answer",answer_node)
 
-# builder.add_edge(START,"retrieve")
-builder.add_node("router", router_node)
+
+
+# Adding egde to node--
 
 builder.add_edge(START, "router")
 
@@ -424,13 +511,14 @@ builder.add_conditional_edges(
     route_after_judge,
 
     {
-        "answer": "answer",
         "rewrite": "rewrite",
+        "rerank": "rerank",
     }
 
 )
 
 builder.add_edge("rewrite", "router")
+builder.add_edge("rerank","answer")
 builder.add_edge("answer",END)
 
 graph = builder.compile()
