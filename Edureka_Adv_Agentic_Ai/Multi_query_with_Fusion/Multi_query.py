@@ -15,14 +15,14 @@ from sentence_transformers import CrossEncoder
 
 load_dotenv()
 
-reranker = CrossEncoder(
-    "cross-encoder/ms-marco-MiniLM-L-6-v2"
-)
-
 api_key = os.getenv("GOOGLE_API_KEY")
 
 if not api_key:
     raise ValueError("api key not found in .env")
+
+reranker = CrossEncoder(
+    "cross-encoder/ms-marco-MiniLM-L-6-v2"
+)
 
 llm = ChatGroq(
     model="llama-3.3-70b-versatile"
@@ -31,6 +31,28 @@ llm = ChatGroq(
 embeddings = HuggingFaceEmbeddings(
     model_name="sentence-transformers/all-MiniLM-L6-v2"
 )
+
+docker_vs = Chroma(
+    persist_directory="Multi_hop_Advance/db/docker", 
+    embedding_function=embeddings
+)
+
+ai_agent_vs = Chroma(
+    persist_directory="Multi_hop_Advance/db/ai_agent",
+    embedding_function=embeddings
+) 
+
+retrievers = {
+
+    "docker_vs": docker_vs.as_retriever(
+        search_kwargs={"k":4}
+    ),
+
+    "ai_agent_vs": ai_agent_vs.as_retriever(
+        search_kwargs={"k":4}
+    ),
+
+}
 
 class GraphState(TypedDict):
 
@@ -41,41 +63,6 @@ class GraphState(TypedDict):
     all_documents : list[Document]
 
     select_ret : list[str]
-
-class RouterResponse(BaseModel):
-    select_ret : List[
-        Literal[
-        "docker_vs",
-        "ai_agent_vs"
-        ]
-    ]
-
-    sel_ret : str
-
-router_llm = llm.with_structured_output(RouterResponse)
-
-router_prompt = """
-    Available retrievers:
-
-    - docker_vs
-    - ai_agent_vs
-    
-    User query:
-
-    {query}
-
-    Return the most appropriate retriever(s).
-"""
-
-def Router_node(state: GraphState):
-
-    prompt = router_prompt.format(
-        query = state['user_query']
-    )
-
-    selecte_ret = router_llm.invoke(prompt)
-
-    return selecte_ret
 
 class Multi_query(BaseModel):
     query : list[str] = Field(description="return in string of multi query in list")
@@ -98,55 +85,75 @@ def Multi_query_generator(state: GraphState):
     multi_query = Multi_llm.invoke(m_prompt)
     return multi_query
 
+class RouterResponse(BaseModel):
+    select_ret : List[
+        Literal[
+        "docker_vs",
+        "ai_agent_vs"
+        ]
+    ]
+
+router_llm = llm.with_structured_output(RouterResponse)
+
+router_prompt = """
+    Available retrievers:
+
+    - docker_vs
+    - ai_agent_vs
+    
+    User query:
+
+    {query}
+
+    Return the most appropriate retriever(s).
+"""
+
+def Router_and_retriever(state: GraphState):
+
+    prompt = router_prompt.format(
+        query = state['user_query']
+    )
+
+    selecte_ret = router_llm.invoke(prompt)
+    print(selecte_ret.select_ret)
+
+    all_ret = []
+
+    for re in selecte_ret.select_ret:
+
+        rett = retrievers[re]
+        
+        result = rett.invoke(state["user_query"])
+
+        all_ret.append({
+            "query": state["user_query"],
+            "retriever": re,
+            "docs": result
+        })
+
+    return all_ret
+
 state = {
-    "user_query" : input("enter user query")
+    "user_query" : input("/n enter user query")
 }
 
 m_query = Multi_query_generator(state)
-print("new query generated base on simple one query", m_query)
 
-docker_vs = Chroma(
-    persist_directory="Multi_hop_Advance/db/docker",
-    embedding_function=embeddings
-)
-
-ai_agent_vs = Chroma(
-    persist_directory="Multi_hop_Advance/db/ai_agent",
-    embedding_function=embeddings
-) 
-
-retrievers = {
-
-    "docker_vs": docker_vs.as_retriever(
-        search_kwargs={"k":4}
-    ),
-
-    "ai_agent_vs": ai_agent_vs.as_retriever(
-        search_kwargs={"k":4}
-    ),
-
-}
-
+all_doc = []
 for query in m_query.query:
-    state["user_query"] = query
+    query_state = {
+        "user_query" : query
+    }
 
-    router = Router_node(state=state)
+    result = Router_and_retriever(query_state)
 
-    print(router)
+    all_doc.extend(result)
 
+print(len(all_doc))
 
-all_results = []
+print(type(all_doc))
 
-for retriever_name in router.select_ret:
-
-    docs = retrievers[retriever_name].invoke(query)
-
-    all_results.append({
-
-        "query": query,
-
-        "retriever": retriever_name,
-
-        "docs": docs
-
-    })
+for i in all_doc:
+    print(type(i))
+    print(i["docs"])
+    print("*"*60)
