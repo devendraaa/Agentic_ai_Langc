@@ -43,7 +43,6 @@ ai_agent_vs = Chroma(
 ) 
 
 retrievers = {
-
     "docker_vs": docker_vs.as_retriever(
         search_kwargs={"k":4}
     ),
@@ -54,7 +53,9 @@ retrievers = {
 
 }
 
-class GraphState(TypedDict):
+class GraphState(TypedDict, total=False):
+
+    original_query : str
 
     user_query : str
 
@@ -134,8 +135,10 @@ def Router_and_retriever(state: GraphState):
     return all_ret
 
 state = {
-    "user_query" : input("/n enter user query")
+    "original_query" : input("/n enter user query")
 }
+
+state["user_query"] = state["original_query"]
 
 m_query = Multi_query_generator(state)
 
@@ -149,11 +152,17 @@ for query in m_query.query:
 
     all_doc.extend(result)
 
-print(len(all_doc))
 
-print(type(all_doc))
+def show_retrieval_results(results):
+    for idx, retrieval in enumerate(results, start=1):
+        print("=" * 100)
+        print(f"Retrieval #{idx}")
+        print(f"Query     : {retrieval['query']}")
+        print(f"Retriever : {retrieval['retriever']}")
+        print(f"Documents : {len(retrieval['docs'])}")
 
-for i in all_doc:
-    print(type(i))
-    print(i["docs"])
-    print("*"*60)
+        for i, doc in enumerate(retrieval["docs"], start=1):
+            print(f"\n[{i}] {doc.metadata.get('book')} | Page {doc.metadata.get('page')}")
+            print(doc.page_content[:150].replace("\n", " ") + "...")
+
+show_retrieval_results(all_doc)
