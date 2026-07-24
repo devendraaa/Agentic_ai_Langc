@@ -124,7 +124,6 @@ class GraphState(TypedDict):
 
     collection: str
 
-
 JUDGE_PROMPT = """
     You are evaluating retrieved knowledge.
 
@@ -290,8 +289,6 @@ def router_node(state: GraphState):
     print("Routing Reason:", response.reason)
 
     state["collection"] = response.collection
-
-    
 
     state["visited_collections"].append(response.collection)
 
@@ -494,8 +491,6 @@ builder.add_node("rewrite",rewrite_query_node)
 
 builder.add_node("answer",answer_node)
 
-
-
 # Adding egde to node--
 
 builder.add_edge(START, "router")
@@ -522,7 +517,6 @@ builder.add_edge("rerank","answer")
 builder.add_edge("answer",END)
 
 graph = builder.compile()
-
 
 from IPython.display import Image, display
 

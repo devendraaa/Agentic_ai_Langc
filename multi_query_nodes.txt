@@ -1,0 +1,58 @@
+Problem : 
+
+One query.
+
+One embedding.
+
+One search.
+
+If the wording is poor, retrieval suffers.
+
+Solution :
+
+Multi-Query Retrieval
+
+Instead of trusting one query, we ask the LLM:
+
+"Generate multiple ways to ask the same question."
+
+Now every query searches the vector database. Each query retrieves slightly different documents.
+Without changing the vector database, we found more relevant documents.
+
+Why does this work?
+
+An LLM understands that different phrases can express the same intent.
+
+For example:
+
+Original     	Alternative
+Car	            Automobile
+Cancer	        Tumor
+Heart Attack	Myocardial Infarction
+GPT	            Decoder-only Transformer
+AI	            Artificial Intelligence
+
+A single embedding may not perfectly capture every synonym or related phrase. 
+Multiple semantically different queries increase the chance that at least one of them aligns well with the stored documents.
+
+Which documents should come first?
+
+Simply returning them in the order they were collected isn't reliable. Some documents appeared in many searches, 
+some only once, and some were ranked highly by several queries.
+
+This leads to the next problem:
+
+How do we intelligently combine multiple ranked lists into one final ranking?
+
+That is exactly what Fusion Algorithms solve.
+
+
+Why not just ask for more documents (k=20)?
+
+This is a common interview question.
+
+If you retrieve the top 20 documents for a single query, you're still limited by that query's wording. 
+If the original query never matches the vocabulary used in an important document, increasing k won't necessarily retrieve it.
+
+Multi-Query Retrieval changes the search intent, not just the number of returned results. It explores different semantic 
+formulations, which is why it often finds relevant documents that a single-query search misses.
