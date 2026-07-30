@@ -1,0 +1,84 @@
+If you simply decompose into three questions and retrieve all three independently, that's decomposition, but not necessarily true sequential multi-hop retrieval.
+
+Example
+
+Suppose the user asks:
+
+"How can AI agents be deployed using Docker, and what Docker features help make the deployment reliable?"
+
+A decomposition LLM might produce:
+
+[
+    "What components are required to deploy an AI agent?",
+    "How can those components be containerized using Docker?",
+    "Which Docker features improve reliability for that deployment?"
+]
+
+These are different from multi-query paraphrases.
+
+The interesting part is Hop 2.
+
+After Hop 1 retrieves something like:
+
+AI agents may require:
+- Python runtime
+- dependencies
+- environment variables
+- external tools/APIs
+- persistent state
+
+you can give that evidence to Hop 2:
+
+Question:
+How can those components be containerized using Docker?
+
+Previous evidence:
+AI agents require Python runtime, dependencies,
+environment variables, external APIs and persistent state.
+
+Now Hop 2 is grounded in Hop 1.
+
+Architecture I recommend
+
+                    Original Query
+                          │
+                          ▼
+                  Decomposition LLM
+                          │
+             ┌────────────┴────────────┐
+             ▼                         │
+          Sub-Q1                       │
+             │                         │
+             ▼                         │
+           Router                      │
+             │                         │
+             ▼                         │
+          Retriever                    │
+             │                         │
+             ▼                         │
+         Evidence 1                    │
+             │                         │
+             ▼                         │
+    Rewrite/Resolve Sub-Q2 ◄───────────┘
+             │
+             ▼
+           Router
+             │
+             ▼
+          Retriever
+             │
+             ▼
+         Evidence 2
+             │
+             ▼
+          Sub-Q3
+             │
+            ...
+             ▼
+       Combine Evidence
+             │
+             ▼
+       Cross Encoder
+             │
+             ▼
+         Final LLM
