@@ -71,7 +71,7 @@ class GraphState(TypedDict, total=False):
     user_query : str
     retrival_name : list[str]
     sub_queries : list[str]
-    hop_result : list[dict]
+    hop_results : list[dict]
     fused_result: list[dict]
     all_evidence: list[dict]
     select_ret : list[str]
@@ -156,7 +156,7 @@ def Route_Query(state : GraphState):
 
         retts = []
 
-        for i in re:
+        for i in list(dict.fromkeys(re)):
 
             ret = retrival[i]
 
@@ -173,15 +173,9 @@ def Route_Query(state : GraphState):
                 "retrievers": retts
             })
         
-    state["hop_result"] = hop_res
+    state["hop_results"] = hop_res
             
     return state
-
-
-
-# state = decompose_query(state)
-
-# all_retrival = Route_Query(state)
 
 def rrf_fusion(state: GraphState, k=60):
 
@@ -219,11 +213,9 @@ def rrf_fusion(state: GraphState, k=60):
 
                 # Unique document identifier
                 doc_id = (
-                    doc.metadata.get("source", "")
+                    doc.metadata["source"]
                     + "_"
-                    + str(doc.metadata.get("page", ""))
-                    + "_"
-                    + str(rank)
+                    + str(doc.metadata["page"])
                 )
 
                 rrf_scores[doc_id] += 1 / (k + rank)
@@ -257,8 +249,6 @@ def rrf_fusion(state: GraphState, k=60):
     state["fused_result"] = fused_results
 
     return state
-
-# f_result = rrf_fusion(all_retrival)
 
 def print_rrf_results(rrf_results):
 
@@ -301,28 +291,25 @@ def aggregate_evidence(state: GraphState):
     state["all_evidence"] = all_eviden
 
     return state
-    # return {
-    #     "hop_results": rrf_results,
-    #     "all_evidence": all_evidence
-    # }
-
-# aggre_result = aggregate_evidence(f_result)
 
 def show_retrieval_results(state: GraphState):
 
     for retrieval in state["all_evidence"]:
+
+        doc = retrieval["document"]
+
         print("=" * 100)
         print(f"Retrieval #{retrieval['hop']}")
-        print(f"Query     : {retrieval['query']}")
-        # print(f"All Retrieval : {retrieval['retriever']}")
-        # print(f"Selected Retriever : {retrieval['selected_retrieval']}")
-        print(f"Documents : {len(retrieval['document'])}")
+        print(f"Query : {retrieval['query']}")
         print(f"Score : {retrieval['score']}")
 
-        for i, doc in enumerate(retrieval["document"], start=1):
-            print(f"\n[{i}] {doc.metadata.get('book')} | Page {doc.metadata.get('page')}")
-            print(doc.page_content[:150].replace("\n", " ") + "...")
+        print(f"Source : {doc.metadata.get('source')}")
+        print(f"Page   : {doc.metadata.get('page')}")
 
+        print(doc.page_content[:200].replace("\n", " "))
+        print("-" * 100)
+
+    return state
 
 workflow = StateGraph(GraphState)
 
@@ -351,10 +338,12 @@ workflow.add_edge("show_retrieval_results", END)
 graph = workflow.compile()
 
 state = {
-    "original_query" : input("/n enter user query")
+    "original_query" : input("\n enter user query")
 }
 
 state["user_query"] = state["original_query"]
+
+result = graph.invoke(state)
 
 from IPython.display import Image, display
 
