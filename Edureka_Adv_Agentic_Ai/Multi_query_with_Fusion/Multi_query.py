@@ -152,7 +152,6 @@ for query in m_query.query:
 
     all_doc.extend(result)
 
-
 def show_retrieval_results(results):
     for idx, retrieval in enumerate(results, start=1):
         print("=" * 100)
@@ -166,3 +165,53 @@ def show_retrieval_results(results):
             print(doc.page_content[:150].replace("\n", " ") + "...")
 
 show_retrieval_results(all_doc)
+
+from collections import defaultdict
+
+def rrf_fusion(all_doc, k=60):
+
+    scores = defaultdict(float)
+    documents = {}
+
+    for retrieval in all_doc:
+
+        docs = retrieval["docs"]
+
+        for rank, doc in enumerate(docs, start=1):
+
+            # 1. Create a unique ID for the document
+            # Best: use a persistent chunk_id if your metadata has one.
+            # Fallback here: book + page + content.
+            doc_id = (
+                doc.metadata.get("book"),
+                doc.metadata.get("page"),
+                doc.page_content
+            )
+
+            # 2. Save the actual Document object
+            documents[doc_id] = doc
+
+            # 3. Calculate and ACCUMULATE RRF score
+            scores[doc_id] += 1 / (k + rank)
+
+    # 4. Sort document IDs by RRF score
+    ranked = sorted(
+        scores.items(),
+        key=lambda x: x[1],
+        reverse=True
+    )
+
+    # 5. Return Document + RRF score
+    results = []
+
+    for doc_id, score in ranked:
+
+        results.append({
+            "document": documents[doc_id],
+            "rrf_score": score
+        })
+
+    return results
+
+for i in result:
+    print("score : ")
