@@ -75,6 +75,7 @@ class GraphState(TypedDict, total=False):
     fused_result: list[dict]
     all_evidence: list[dict]
     select_ret : list[str]
+    reranked_evidence: list[dict]
 
 class Decomposition_query(BaseModel):
     sub_query: list[str] = Field(
@@ -290,18 +291,67 @@ def aggregate_evidence(state: GraphState):
 
     state["all_evidence"] = all_eviden
 
+    print("total length of aggregations: ", len(all_eviden))
+
     return state
 
+def reranked_document(state: GraphState):
+    pairs = []
+
+    for evidence in state["all_evidence"]:
+      
+        pairs.append((
+            state['user_query'],
+            evidence['document'].page_content
+        )
+    )
+
+    print("cross encoder pairs:", pairs[0])
+    scores = reranker.predict(pairs)
+
+    print("scores :", scores)
+    reranked = []
+
+    for evidence, score in zip(state["all_evidence"], scores):
+
+        item = evidence.copy()
+
+        item["rerank_score"] = float(score)
+
+        reranked.append(item)
+
+    reranked.sort(
+        key=lambda x: x["rerank_score"],
+        reverse=True
+    )
+
+    TOP_K = 8
+    MIN_SCORE = -2.0
+
+    filtered = [
+        doc
+        for doc in reranked
+        if doc["rerank_score"] >= MIN_SCORE
+    ]
+
+    state["reranked_evidence"] = filtered[:TOP_K]
+
+    print("after filtered :", len(filtered))
+
+    return state
+    
 def show_retrieval_results(state: GraphState):
 
-    for retrieval in state["all_evidence"]:
+    for rank, retrieval in enumerate(state["reranked_evidence"], start=1):
 
         doc = retrieval["document"]
 
         print("=" * 100)
-        print(f"Retrieval #{retrieval['hop']}")
+        print(f"Rank :{rank}")
+        print(f"Hop #{retrieval['hop']}")
         print(f"Query : {retrieval['query']}")
-        print(f"Score : {retrieval['score']}")
+        print(f"RRF Score : {retrieval['score']}")
+        print(f"CrossEncoder :{retrieval['rerank_score']}")
 
         print(f"Source : {doc.metadata.get('source')}")
         print(f"Page   : {doc.metadata.get('page')}")
@@ -321,6 +371,8 @@ workflow.add_node("rrf_fusion", rrf_fusion)
 
 workflow.add_node("aggregate_evidence", aggregate_evidence)
 
+workflow.add_node("reranked_document", reranked_document)
+
 workflow.add_node("show_retrieval_results", show_retrieval_results)
 
 workflow.add_edge(START, "decompose_query")
@@ -331,7 +383,9 @@ workflow.add_edge("Route_Query", "rrf_fusion")
 
 workflow.add_edge("rrf_fusion", "aggregate_evidence")
 
-workflow.add_edge("aggregate_evidence", "show_retrieval_results")
+workflow.add_edge("aggregate_evidence", "reranked_document")
+
+workflow.add_edge("reranked_document", "show_retrieval_results")
 
 workflow.add_edge("show_retrieval_results", END)
 
