@@ -1,0 +1,457 @@
+[
+  {
+    "id": "fs_001",
+    "question": "What is Docker?",
+    "sub_queries": [
+      "What is Docker?"
+    ],
+    "metadata": {
+      "category": "definition",
+      "complexity": "simple",
+      "domains": [
+        "docker"
+      ]
+    }
+  },
+  {
+    "id": "fs_002",
+    "question": "How does Docker networking work?",
+    "sub_queries": [
+      "What is Docker networking?",
+      "How does Docker networking work?"
+    ],
+    "metadata": {
+      "category": "architecture",
+      "complexity": "multi_hop",
+      "domains": [
+        "docker"
+      ]
+    }
+  },
+  {
+    "id": "fs_003",
+    "question": "Compare Docker volumes and bind mounts.",
+    "sub_queries": [
+      "What are Docker volumes?",
+      "What are Docker bind mounts?",
+      "Compare Docker volumes and bind mounts."
+    ],
+    "metadata": {
+      "category": "comparison",
+      "complexity": "multi_hop",
+      "domains": [
+        "docker"
+      ]
+    }
+  },
+  {
+    "id": "fs_004",
+    "question": "How do I create a Docker image and push it to Docker Hub?",
+    "sub_queries": [
+      "How do you create a Docker image?",
+      "How do you push a Docker image to Docker Hub?"
+    ],
+    "metadata": {
+      "category": "deployment",
+      "complexity": "multi_hop",
+      "domains": [
+        "docker"
+      ]
+    }
+  },
+  {
+    "id": "fs_005",
+    "question": "Why is my Docker container restarting continuously?",
+    "sub_queries": [
+      "What causes Docker containers to restart continuously?",
+      "How do you troubleshoot Docker restart loops?"
+    ],
+    "metadata": {
+      "category": "troubleshooting",
+      "complexity": "multi_hop",
+      "domains": [
+        "docker"
+      ]
+    }
+  },
+  {
+    "id": "fs_006",
+    "question": "Explain Docker Compose.",
+    "sub_queries": [
+      "What is Docker Compose?"
+    ],
+    "metadata": {
+      "category": "definition",
+      "complexity": "simple",
+      "domains": [
+        "docker"
+      ]
+    }
+  },
+  {
+    "id": "fs_007",
+    "question": "How do Docker Compose and Docker Engine work together?",
+    "sub_queries": [
+      "What is Docker Engine?",
+      "What is Docker Compose?",
+      "How do Docker Engine and Docker Compose work together?"
+    ],
+    "metadata": {
+      "category": "architecture",
+      "complexity": "multi_hop",
+      "domains": [
+        "docker"
+      ]
+    }
+  },
+  {
+    "id": "fs_008",
+    "question": "What are Docker best practices for production deployments?",
+    "sub_queries": [
+      "What are Docker best practices?",
+      "What Docker practices are recommended for production deployments?"
+    ],
+    "metadata": {
+      "category": "best_practices",
+      "complexity": "multi_hop",
+      "domains": [
+        "docker"
+      ]
+    }
+  },
+  {
+    "id": "fs_009",
+    "question": "How do I optimize Docker image size?",
+    "sub_queries": [
+      "What factors increase Docker image size?",
+      "How can Docker image size be optimized?"
+    ],
+    "metadata": {
+      "category": "optimization",
+      "complexity": "multi_hop",
+      "domains": [
+        "docker"
+      ]
+    }
+  },
+  {
+    "id": "fs_010",
+    "question": "Explain Docker container lifecycle.",
+    "sub_queries": [
+      "What is the Docker container lifecycle?"
+    ],
+    "metadata": {
+      "category": "definition",
+      "complexity": "simple",
+      "domains": [
+        "docker"
+      ]
+    }
+  },
+  {
+    "id": "fs_011",
+    "question": "What is Amazon ECS?",
+    "sub_queries": [
+      "What is Amazon ECS?"
+    ],
+    "metadata": {
+      "category": "definition",
+      "complexity": "simple",
+      "domains": [
+        "aws"
+      ]
+    }
+  },
+  {
+    "id": "fs_012",
+    "question": "How do I deploy Docker containers on Amazon ECS?",
+    "sub_queries": [
+      "How do you deploy Docker containers on Amazon ECS?"
+    ],
+    "metadata": {
+      "category": "deployment",
+      "complexity": "simple",
+      "domains": [
+        "aws",
+        "docker"
+      ]
+    }
+  },
+  {
+    "id": "fs_013",
+    "question": "Compare ECS and EKS.",
+    "sub_queries": [
+      "What is Amazon ECS?",
+      "What is Amazon EKS?",
+      "Compare Amazon ECS and Amazon EKS."
+    ],
+    "metadata": {
+      "category": "comparison",
+      "complexity": "multi_hop",
+      "domains": [
+        "aws"
+      ]
+    }
+  },
+  {
+    "id": "fs_014",
+    "question": "Explain AWS IAM roles.",
+    "sub_queries": [
+      "What are AWS IAM roles?"
+    ],
+    "metadata": {
+      "category": "definition",
+      "complexity": "simple",
+      "domains": [
+        "aws"
+      ]
+    }
+  },
+  {
+    "id": "fs_015",
+    "question": "Why is my ECS task stuck in PENDING state?",
+    "sub_queries": [
+      "What causes Amazon ECS tasks to remain in the PENDING state?",
+      "How do you troubleshoot Amazon ECS tasks stuck in the PENDING state?"
+    ],
+    "metadata": {
+      "category": "troubleshooting",
+      "complexity": "multi_hop",
+      "domains": [
+        "aws"
+      ]
+    }
+  },
+  {
+    "id": "fs_016",
+    "question": "How do Application Load Balancers work with ECS?",
+    "sub_queries": [
+      "What is an AWS Application Load Balancer?",
+      "How does an Application Load Balancer integrate with Amazon ECS?"
+    ],
+    "metadata": {
+      "category": "architecture",
+      "complexity": "multi_hop",
+      "domains": [
+        "aws"
+      ]
+    }
+  },
+  {
+    "id": "fs_017",
+    "question": "What are AWS security best practices?",
+    "sub_queries": [
+      "What are AWS security best practices?"
+    ],
+    "metadata": {
+      "category": "best_practices",
+      "complexity": "simple",
+      "domains": [
+        "aws"
+      ]
+    }
+  },
+  {
+    "id": "fs_018",
+    "question": "How do I configure Auto Scaling in ECS?",
+    "sub_queries": [
+      "How does Auto Scaling work in Amazon ECS?",
+      "How do you configure Auto Scaling for Amazon ECS services?"
+    ],
+    "metadata": {
+      "category": "configuration",
+      "complexity": "multi_hop",
+      "domains": [
+        "aws"
+      ]
+    }
+  },
+  {
+    "id": "fs_019",
+    "question": "What is AWS Fargate?",
+    "sub_queries": [
+      "What is AWS Fargate?"
+    ],
+    "metadata": {
+      "category": "definition",
+      "complexity": "simple",
+      "domains": [
+        "aws"
+      ]
+    }
+  },
+  {
+    "id": "fs_020",
+    "question": "Compare AWS Lambda and ECS.",
+    "sub_queries": [
+      "What is AWS Lambda?",
+      "What is Amazon ECS?",
+      "Compare AWS Lambda and Amazon ECS."
+    ],
+    "metadata": {
+      "category": "comparison",
+      "complexity": "multi_hop",
+      "domains": [
+        "aws"
+      ]
+    }
+  },
+  {
+    "id": "fs_021",
+    "question": "What is an AI Agent?",
+    "sub_queries": [
+      "What is an AI Agent?"
+    ],
+    "metadata": {
+      "category": "definition",
+      "complexity": "simple",
+      "domains": [
+        "ai_agent"
+      ]
+    }
+  },
+  {
+    "id": "fs_022",
+    "question": "How does an AI Agent use tools?",
+    "sub_queries": [
+      "What are tools in AI Agents?",
+      "How do AI Agents use tools?"
+    ],
+    "metadata": {
+      "category": "architecture",
+      "complexity": "multi_hop",
+      "domains": [
+        "ai_agent"
+      ]
+    }
+  },
+  {
+    "id": "fs_023",
+    "question": "Explain AI Agent planning and reasoning.",
+    "sub_queries": [
+      "What is planning in AI Agents?",
+      "What is reasoning in AI Agents?",
+      "How do planning and reasoning work together in AI Agents?"
+    ],
+    "metadata": {
+      "category": "architecture",
+      "complexity": "multi_hop",
+      "domains": [
+        "ai_agent"
+      ]
+    }
+  },
+  {
+    "id": "fs_024",
+    "question": "How does hybrid memory improve AI Agents?",
+    "sub_queries": [
+      "What is hybrid memory?",
+      "What memory layers are used in AI Agents?",
+      "How does hybrid memory improve AI Agent performance?"
+    ],
+    "metadata": {
+      "category": "memory",
+      "complexity": "multi_hop",
+      "domains": [
+        "ai_agent"
+      ]
+    }
+  },
+  {
+    "id": "fs_025",
+    "question": "How do AI Agents perform multi-hop reasoning?",
+    "sub_queries": [
+      "What is multi-hop reasoning?",
+      "How do AI Agents perform multi-hop reasoning?"
+    ],
+    "metadata": {
+      "category": "reasoning",
+      "complexity": "multi_hop",
+      "domains": [
+        "ai_agent"
+      ]
+    }
+  },
+  {
+    "id": "fs_026",
+    "question": "What is the difference between an AI Agent and a chatbot?",
+    "sub_queries": [
+      "What is an AI Agent?",
+      "What is a chatbot?",
+      "Compare AI Agents and chatbots."
+    ],
+    "metadata": {
+      "category": "comparison",
+      "complexity": "multi_hop",
+      "domains": [
+        "ai_agent"
+      ]
+    }
+  },
+  {
+    "id": "fs_027",
+    "question": "How do AI Agents retrieve information from knowledge bases?",
+    "sub_queries": [
+      "How do AI Agents retrieve information?",
+      "How are knowledge bases integrated into AI Agents?"
+    ],
+    "metadata": {
+      "category": "retrieval",
+      "complexity": "multi_hop",
+      "domains": [
+        "ai_agent"
+      ]
+    }
+  },
+  {
+    "id": "fs_028",
+    "question": "Explain the architecture of a production AI Agent.",
+    "sub_queries": [
+      "What are the components of a production AI Agent?",
+      "How do these components work together in a production AI Agent?"
+    ],
+    "metadata": {
+      "category": "architecture",
+      "complexity": "multi_hop",
+      "domains": [
+        "ai_agent"
+      ]
+    }
+  },
+  {
+    "id": "fs_029",
+    "question": "How does an AI Agent use retrieval, memory, and tools together?",
+    "sub_queries": [
+      "How do AI Agents retrieve information?",
+      "How do AI Agents use memory?",
+      "How do AI Agents perform tool calling?",
+      "How are retrieval, memory, and tools combined in AI Agents?"
+    ],
+    "metadata": {
+      "category": "architecture",
+      "complexity": "multi_hop",
+      "domains": [
+        "ai_agent"
+      ]
+    }
+  },
+  {
+    "id": "fs_030",
+    "question": "How do I build a production-ready AI Agent?",
+    "sub_queries": [
+      "What are the core components of a production AI Agent?",
+      "How do you implement planning and reasoning in an AI Agent?",
+      "How do you implement memory in an AI Agent?",
+      "How do you deploy a production AI Agent?"
+    ],
+    "metadata": {
+      "category": "implementation",
+      "complexity": "multi_hop",
+      "domains": [
+        "ai_agent",
+        "aws",
+        "docker"
+      ]
+    }
+  }
+]

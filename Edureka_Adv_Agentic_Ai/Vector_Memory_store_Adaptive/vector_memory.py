@@ -49,6 +49,10 @@ aws = Chroma(
     embedding_function=embeddings
 )
 
+few_shot = Chroma(
+    persist_directory="db/few_shot",
+    embedding_function=embeddings
+)
 # all retrival dictionary
 
 retrival = {
@@ -62,6 +66,10 @@ retrival = {
 
     "aws": aws.as_retriever(
         search_kwargs ={"k":4}
+    ),
+
+    "few_shot": few_shot.as_retriever(
+        search_kwargs ={"k":3}
     )
 }
 
@@ -83,6 +91,75 @@ class GraphState(TypedDict, total=False):
     conversation_history : list
     retrieval_memory : list 
 
+    # few-shot-retrieval
+    few_shot_examples : list[Document]
+
+def retrieval_fewshot_examples(state: GraphState):
+
+    docs = retrival["few_shot"].invoke(state["user_query"])
+
+    state["few_shot_examples"] = docs
+
+    print("\n few-shot examples retrieved")
+
+    for doc in docs:
+        print(doc.page_content)
+        print("=" * 80)
+
+    return state
+
+class Query_classifier(BaseModel):
+    query_type : Literal[
+        "simple",
+        "multi_hop"
+    ]
+
+query_classifier_prompt = """
+    You are an expert query classifier.
+
+    Determine whether the user question is:
+
+    simple
+    - Can be answered with one retrieval.
+
+    multi_hop
+    - Requires multiple reasoning steps.
+    - Needs information from multiple topics.
+    - Requires decomposition.
+
+    User Question:
+
+    {query}
+
+    Return only:
+    simple
+    or
+    multi_hop
+"""
+
+query_classifier_llm = llm.with_structured_output(Query_classifier)
+
+def classify_query(state: GraphState):
+    prompt = query_classifier_prompt.format(
+        query = state["user_query"]
+    )
+
+    response = query_classifier_llm.invoke(prompt)
+
+    state["query_type"] = response.query_type
+
+    print("\n query type updated to state")
+    print(response.query_type)
+
+    return state
+
+def query_router(state: GraphState):
+    if state["query_type"] == "simple":
+        print("\n simple query detected")
+        return "simple"
+
+    return "multi_hop"
+
 class Decomposition_query(BaseModel):
     sub_query: list[str] = Field(
         description="Ordered sub-questions required to answer the original question"
@@ -103,26 +180,19 @@ def retrieve_memory(state: GraphState):
     return state
 
 decompose_prompt = """
-You are an expert at decomposing complex questions for multi-hop retrieval.
-
-User Query:
-{query}
-
-Generate an ordered list of sub-questions.
-
-Rules:
-1. Each sub-question must answer one unique information need.
-2. Do not create overlapping or redundant questions.
-3. Arrange the questions in logical dependency order.
-4. Later questions may rely on information from earlier ones.
-5. Do not generate paraphrases.
-6. Generate the minimum number of questions needed.
-7. Return only the list of sub-questions.
+      
 """
 
 def decompose_query(state : GraphState):
 
+    examples = ""
+
+    for doc in state["few_shot_examples"]:
+        examples += doc.page_content
+        examples += "\n\n"
+
     prompt = decompose_prompt.format(
+        examples = examples,
         query = state["user_query"]
         )
 
@@ -160,6 +230,11 @@ router_prompt = """
 """
 
 def Route_Query(state : GraphState):
+
+    # if state["query_type"] == "simple":
+    #     state["sub_queries"] = [
+    #         state["user_query"]
+    #         ]
 
     hop_res = []
 
@@ -398,6 +473,10 @@ def update_memory(state):
 
 workflow = StateGraph(GraphState)
 
+workflow.add_node("retrieval_fewshot_examples", retrieval_fewshot_examples)
+
+workflow.add_node("classify_query", classify_query)
+
 workflow.add_node("retrieve_memory", retrieve_memory)
 
 workflow.add_node("decompose_query", decompose_query)
@@ -412,7 +491,20 @@ workflow.add_node("reranked_document", reranked_document)
 
 workflow.add_node("show_retrieval_results", show_retrieval_results)
 
-workflow.add_edge(START, "retrieve_memory")
+workflow.add_node("update_memory", update_memory)
+
+# adding workflow edges
+
+# workflow.add_edge(START, "classify_query")
+
+# workflow.add_conditional_edges("classify_query", query_router,{
+    # "simple": "Route_Query",
+    # "multi_hop": "decompose_query"
+# })
+
+workflow.add_edge(START, "retrieval_fewshot_examples")
+
+workflow.add_edge("retrieval_fewshot_examples", "retrieve_memory")
 
 workflow.add_edge("retrieve_memory", "decompose_query")
 
@@ -426,7 +518,9 @@ workflow.add_edge("aggregate_evidence", "reranked_document")
 
 workflow.add_edge("reranked_document", "show_retrieval_results")
 
-workflow.add_edge("show_retrieval_results", END)
+workflow.add_edge("show_retrieval_results", "update_memory")
+
+workflow.add_edge("update_memory", END)
 
 graph = workflow.compile()
 
