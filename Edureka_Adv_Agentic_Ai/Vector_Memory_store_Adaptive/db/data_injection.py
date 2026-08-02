@@ -12,30 +12,41 @@ embeddings = HuggingFaceEmbeddings(
     model_name="sentence-transformers/all-MiniLM-L6-v2" 
 )
 
-with open("data_injection.json", "r", encoding="utf-8") as f:
+with open("few_shot_examples.json", "r", encoding="utf-8") as f:
     examples = json.load(f)
 
 documents = []
 
 for example in examples:
 
-    page_content = f""" 
-                    Question: {example['question']}
-                    sub queries
-                        """
-
-    for i, query in enumerate(example['sub_queries'], start=1):
-        page_content += f"\n{i}. {query}"
-
     documents.append(
         Document(
-            page_content=page_content.strip(),
+            page_content = example["question"],
 
             metadata={
                 "id": example["id"],
-                "category":example["metadata"]["category"],
-                "complexity":example["metadata"]["complexity"],
-                "domains": ",".join(example["metadata"]["domains"]),
+
+                #store decomposition in metedata
+                "sub_query": example["sub_queries"],
+                "category": example["metadata"]["category"],
+                "complexity": example["metadata"]["complexity"],
+                "domains": example["metadata"]["domains"],
             }
         )
     )
+
+    # -----------------------
+# Create Chroma
+# -----------------------
+
+vectorstore = Chroma.from_documents(
+
+    documents=documents,
+
+    embedding=embeddings,
+
+    persist_directory="db/few_shot"
+
+)
+
+print(f"Stored {len(documents)} examples.")

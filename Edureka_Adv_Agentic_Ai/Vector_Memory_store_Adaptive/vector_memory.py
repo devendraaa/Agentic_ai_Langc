@@ -1,4 +1,5 @@
 from typing import TypedDict, List
+from annotated_types import doc
 from langchain_core.documents import Document
 import ftfy
 import os
@@ -17,6 +18,8 @@ from collections import defaultdict
 load_dotenv()
 
 api_key = os.getenv("GOOGLE_API_KEY")
+
+DEBUG = False
 
 if not api_key:
     raise ValueError("api key not found in .env file")
@@ -50,7 +53,7 @@ aws = Chroma(
 )
 
 few_shot = Chroma(
-    persist_directory="db/few_shot",
+    persist_directory="db/db/few_shot",
     embedding_function=embeddings
 )
 # all retrival dictionary
@@ -94,19 +97,12 @@ class GraphState(TypedDict, total=False):
     # few-shot-retrieval
     few_shot_examples : list[Document]
 
-def retrieval_fewshot_examples(state: GraphState):
+    # context builder
+    context : str
 
-    docs = retrival["few_shot"].invoke(state["user_query"])
-
-    state["few_shot_examples"] = docs
-
-    print("\n few-shot examples retrieved")
-
-    for doc in docs:
-        print(doc.page_content)
-        print("=" * 80)
-
-    return state
+    #prompt builder
+    final_prompt : str
+    final_answer : str
 
 class Query_classifier(BaseModel):
     query_type : Literal[
@@ -138,6 +134,19 @@ query_classifier_prompt = """
 """
 
 query_classifier_llm = llm.with_structured_output(Query_classifier)
+
+def retrieval_fewshot_examples(state: GraphState):
+
+    docs = retrival["few_shot"].invoke(state["user_query"])
+    print("\n few-shot length of docs:", len(docs))
+
+    state["few_shot_examples"] = docs
+
+    for doc in docs:
+        print(doc.page_content)
+        print("=" * 80)
+
+    return state
 
 def classify_query(state: GraphState):
     prompt = query_classifier_prompt.format(
@@ -180,26 +189,70 @@ def retrieve_memory(state: GraphState):
     return state
 
 decompose_prompt = """
-      
+        You are an expert Query Decomposition Assistant.
+
+        Your job is to decompose only complex questions into independent retrieval queries.
+
+        Rules:
+
+        1. Each sub-query must retrieve one specific piece of information.
+        2. Do NOT create overlapping questions.
+        3. Keep the minimum number of sub-queries.
+        4. Every sub-query must be independently understandable.
+        5. Never use pronouns like:
+        - it
+        - they
+        - this
+        6. Repeat the subject whenever necessary.
+        7. If the question is simple, return exactly one sub-query.
+        8. Return ONLY the list of sub-queries.
+
+        --------------------------------------------------
+
+        Here are some examples.
+
+        {examples}
+
+        --------------------------------------------------
+
+        User Question
+
+        {query}
 """
 
-def decompose_query(state : GraphState):
+def decompose_query(state: GraphState):
 
     examples = ""
 
-    for doc in state["few_shot_examples"]:
-        examples += doc.page_content
+    for index, doc in enumerate(state["few_shot_examples"], start=1):
+
+        examples += f"""
+            Example {index}
+
+            Question:
+            {doc.page_content}
+
+            Sub Queries:
+        """
+
+        for i, q in enumerate(doc.metadata["sub_query"], start=1):
+            examples += f"\n{i}. {q}"
+
         examples += "\n\n"
 
     prompt = decompose_prompt.format(
-        examples = examples,
-        query = state["user_query"]
-        )
+        examples=examples,
+        query=state["user_query"]
+    )
+
+    print("="*120)
+    print(prompt)
+    print("="*120)
 
     response = decom_llm.invoke(prompt)
 
     state["sub_queries"] = response.sub_query
-    print("decompose query updated to state")
+
     print(response.sub_query)
 
     return state
@@ -432,7 +485,65 @@ def reranked_document(state: GraphState):
     print("after filtered :", len(filtered))
 
     return state
-    
+
+def context_builder(state: GraphState):
+
+    MAX_CONTEXT_DOCS = 4
+
+    MAX_CHARS = 1200
+
+    context = ""
+
+    # -------------------------
+    # Working Memory
+    # -------------------------
+
+    memory = state.get("retrieved_memory", [])
+
+    if memory:
+
+        context += "===== Conversation History =====\n"
+
+        for msg in memory:
+
+            context += f"{msg['role']}: {msg['content']}\n"
+
+        context += "\n"
+
+    # -------------------------
+    # Retrieved Documents
+    # -------------------------
+
+    context += "===== Retrieved Knowledge =====\n\n"
+
+    for i, evidence in enumerate(state["reranked_evidence"][:MAX_CONTEXT_DOCS], start=1):
+
+        doc = evidence["document"]
+
+        context += f"""
+        Document  = {i}
+
+        Source:
+        {doc.metadata.get("source")}
+
+        Page:
+        {doc.metadata.get("page")}
+
+        CrossEncoder Score:
+        {evidence["rerank_score"]:.3f}
+
+        Content:
+        {doc.page_content[:MAX_CHARS]}
+                            """
+
+    state["context"] = context
+
+    if DEBUG:
+        print("\n\n===== Context Builder Output =====\n")
+        print(context)
+
+    return state
+
 def show_retrieval_results(state: GraphState):
 
     for rank, retrieval in enumerate(state["reranked_evidence"], start=1):
@@ -471,11 +582,83 @@ def update_memory(state):
 
     return state
 
+ANSWER_PROMPT = """
+You are a Retrieval-Augmented AI Assistant.
+
+Use ONLY the retrieved evidence.
+
+If the answer cannot be answered from the retrieved evidence, say:
+
+"I don't have enough information."
+
+Never invent evidence.
+
+Never invent documents.
+
+Never continue writing retrieved evidence.
+
+Respond ONLY with the final answer.
+
+Retrieved Evidence
+
+{context}
+
+Question
+
+{question}
+
+Final Answer:
+"""
+
+def prompt_builder(state: GraphState):
+
+    prompt = ANSWER_PROMPT.format(
+
+        memory=state.get("memory_context", ""),
+
+        context=state["context"],
+
+        question=state["user_query"]
+
+    )
+
+    state["final_prompt"] = prompt
+
+    print("=" * 120)
+    print("FINAL PROMPT")
+    print("=" * 120)
+    print(prompt)
+
+    return state
+
+def generate_answer(state: GraphState):
+
+    print("=" * 120)
+    print("Generating Final Answer...")
+    print("=" * 120)
+
+    response = llm.invoke(state["final_prompt"])
+
+    state["final_answer"] = response.content
+
+    return state
+
+def show_final_answer(state: GraphState):
+
+    print("\n")
+    print("=" * 120)
+    print("FINAL ANSWER")
+    print("=" * 120)
+
+    print(state["final_answer"])
+
+    return state
+
 workflow = StateGraph(GraphState)
 
 workflow.add_node("retrieval_fewshot_examples", retrieval_fewshot_examples)
 
-workflow.add_node("classify_query", classify_query)
+# workflow.add_node("classify_query", classify_query)
 
 workflow.add_node("retrieve_memory", retrieve_memory)
 
@@ -489,9 +672,17 @@ workflow.add_node("aggregate_evidence", aggregate_evidence)
 
 workflow.add_node("reranked_document", reranked_document)
 
+workflow.add_node("context_builder", context_builder)
+
 workflow.add_node("show_retrieval_results", show_retrieval_results)
 
 workflow.add_node("update_memory", update_memory)
+
+workflow.add_node("prompt_builder", prompt_builder)
+
+workflow.add_node("generate_answer", generate_answer)
+
+workflow.add_node("show_final_answer", show_final_answer)
 
 # adding workflow edges
 
@@ -504,11 +695,11 @@ workflow.add_node("update_memory", update_memory)
 
 workflow.add_edge(START, "retrieval_fewshot_examples")
 
-workflow.add_edge("retrieval_fewshot_examples", "retrieve_memory")
+workflow.add_edge("retrieval_fewshot_examples", "decompose_query")
 
-workflow.add_edge("retrieve_memory", "decompose_query")
+workflow.add_edge("decompose_query", "retrieve_memory")
 
-workflow.add_edge("decompose_query", "Route_Query")
+workflow.add_edge("retrieve_memory", "Route_Query")
 
 workflow.add_edge("Route_Query", "rrf_fusion")
 
@@ -516,11 +707,19 @@ workflow.add_edge("rrf_fusion", "aggregate_evidence")
 
 workflow.add_edge("aggregate_evidence", "reranked_document")
 
-workflow.add_edge("reranked_document", "show_retrieval_results")
+workflow.add_edge("reranked_document", "context_builder")
+
+workflow.add_edge("context_builder", "show_retrieval_results")
 
 workflow.add_edge("show_retrieval_results", "update_memory")
 
-workflow.add_edge("update_memory", END)
+workflow.add_edge("update_memory", "prompt_builder")
+
+workflow.add_edge("prompt_builder", "generate_answer")
+
+workflow.add_edge("generate_answer", "show_final_answer")
+
+workflow.add_edge("show_final_answer", END)
 
 graph = workflow.compile()
 
