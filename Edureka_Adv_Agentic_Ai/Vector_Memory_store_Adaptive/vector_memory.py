@@ -104,6 +104,9 @@ class GraphState(TypedDict, total=False):
     final_prompt : str
     final_answer : str
 
+    #context compression
+    compressed_evidence : list[dict]
+
 class Query_classifier(BaseModel):
     query_type : Literal[
         "simple",
@@ -452,10 +455,10 @@ def reranked_document(state: GraphState):
         )
     )
 
-    print("cross encoder pairs:", pairs[0])
+    # print("cross encoder pairs:", pairs[0])
     scores = reranker.predict(pairs)
 
-    print("scores :", scores)
+    # print("scores :", scores)
     reranked = []
 
     for evidence, score in zip(state["all_evidence"], scores):
@@ -486,11 +489,62 @@ def reranked_document(state: GraphState):
 
     return state
 
+compression_prompt = """ You are an Evidence Extraction system.
+
+    Extract ONLY the exact facts from the document that are useful for answering the user's question.
+
+    Rules:
+
+    1. Never rewrite technical steps.
+    2. Never invent missing information.
+    3. Never explain.
+    4. Never summarize using outside knowledge.
+    5. Copy only relevant facts from the document.
+    6. Remove copyright, page numbers and headers.
+    7. Preserve commands exactly as written.
+
+    User Question
+
+    {question}
+
+    Retrieved Document
+
+    {document}
+
+    Relevant Facts:   
+                    """
+
+def context_compression(state: GraphState):
+    compressed = []
+
+    for evidence in state["reranked_evidence"]:
+
+        doc = evidence["document"]
+
+        prompt = compression_prompt.format(
+            question=state["user_query"],
+            document=doc.page_content)
+        
+        response = llm.invoke(prompt)
+
+        compressed.append({
+            "hop": evidence["hop"],
+            "query": evidence["query"],
+            "source": doc.metadata.get("source"),
+            "page": doc.metadata.get("page"),
+            "score": evidence["score"],
+            "compressed_text": response.content.strip()
+        })
+
+        state["compressed_evidence"] = compressed
+
+        return state
+
 def context_builder(state: GraphState):
 
     MAX_CONTEXT_DOCS = 4
 
-    MAX_CHARS = 1200
+    MAX_CHARS = 500
 
     context = ""
 
@@ -515,25 +569,26 @@ def context_builder(state: GraphState):
     # -------------------------
 
     context += "===== Retrieved Knowledge =====\n\n"
+        # Document  = {i}
+            # CrossEncoder Score:
+        # {evidence["rerank_score"]:.3f}
 
-    for i, evidence in enumerate(state["reranked_evidence"][:MAX_CONTEXT_DOCS], start=1):
+    for i, evidence in enumerate(state["compressed_evidence"], start=1):
 
-        doc = evidence["document"]
+        # doc = evidence["document"]
 
         context += f"""
-        Document  = {i}
+
+        Evidence {i}:
 
         Source:
-        {doc.metadata.get("source")}
+        {evidence['source']}
 
         Page:
-        {doc.metadata.get("page")}
-
-        CrossEncoder Score:
-        {evidence["rerank_score"]:.3f}
+        {evidence['page']}
 
         Content:
-        {doc.page_content[:MAX_CHARS]}
+        {evidence['compressed_text']}
                             """
 
     state["context"] = context
@@ -658,8 +713,6 @@ workflow = StateGraph(GraphState)
 
 workflow.add_node("retrieval_fewshot_examples", retrieval_fewshot_examples)
 
-# workflow.add_node("classify_query", classify_query)
-
 workflow.add_node("retrieve_memory", retrieve_memory)
 
 workflow.add_node("decompose_query", decompose_query)
@@ -671,6 +724,8 @@ workflow.add_node("rrf_fusion", rrf_fusion)
 workflow.add_node("aggregate_evidence", aggregate_evidence)
 
 workflow.add_node("reranked_document", reranked_document)
+
+workflow.add_node("context_compression", context_compression)
 
 workflow.add_node("context_builder", context_builder)
 
@@ -707,7 +762,9 @@ workflow.add_edge("rrf_fusion", "aggregate_evidence")
 
 workflow.add_edge("aggregate_evidence", "reranked_document")
 
-workflow.add_edge("reranked_document", "context_builder")
+workflow.add_edge("reranked_document", "context_compression")
+
+workflow.add_edge("context_compression", "context_builder")
 
 workflow.add_edge("context_builder", "show_retrieval_results")
 
