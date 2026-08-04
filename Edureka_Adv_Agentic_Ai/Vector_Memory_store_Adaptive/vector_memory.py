@@ -360,8 +360,7 @@ class RouterRespones(BaseModel):
         Literal[
             "docker",
             "ai_agent",
-            "aws",
-            "memory_vector"
+            "aws"
         ]
     ]
 
