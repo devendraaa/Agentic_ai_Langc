@@ -14,6 +14,8 @@ from typing import Literal
 from pydantic import BaseModel, Field
 from sentence_transformers import CrossEncoder
 from collections import defaultdict
+import uuid
+from datetime import datetime
 
 load_dotenv()
 
@@ -58,6 +60,11 @@ few_shot = Chroma(
 )
 # all retrival dictionary
 
+working_memory = Chroma(
+    persist_directory="db/memory_vector",
+    embedding_function=embeddings
+)
+
 retrival = {
     "docker": docker.as_retriever(
         search_kwargs = {"k":4}
@@ -91,8 +98,11 @@ class GraphState(TypedDict, total=False):
     query_type : str
 
     # memory layer
+    conversation_id : str
     conversation_history : list
-    retrieval_memory : list 
+    retrieval_memory : list[Document]
+    turn : int
+    hybrid_memory : str
 
     # few-shot-retrieval
     few_shot_examples : list[Document]
@@ -106,6 +116,53 @@ class GraphState(TypedDict, total=False):
 
     #context compression
     compressed_evidence : list[dict]
+
+    #memory orchestration
+    memory_plan : list[dict]
+
+MEMORY_KEYWORDS = {
+    "continue",
+    "previous",
+    "earlier",
+    "last",
+    "remember",
+    "again",
+    "same",
+    "before",
+    "our"
+}
+
+PREFERENCE_KEYWORDS = {
+    "prefer",
+    "favorite",
+    "usually",
+    "always",
+    "my",
+    "preference"
+}
+
+def memory_orchestrator(state: GraphState):
+
+    query = state["user_query"].lower()
+
+    plan = {
+        "working": True,
+        "episodic": False,
+        "semantic": False
+    }
+
+    if any(k in query for k in MEMORY_KEYWORDS):
+        plan["episodic"] = True
+
+    if any(k in query for k in PREFERENCE_KEYWORDS):
+        plan["semantic"] = True
+
+    state["memory_plan"] = plan
+
+    print("\nMemory Plan")
+    print(plan)
+
+    return state
 
 class Query_classifier(BaseModel):
     query_type : Literal[
@@ -137,6 +194,56 @@ query_classifier_prompt = """
 """
 
 query_classifier_llm = llm.with_structured_output(Query_classifier)
+
+def update_memory(state: GraphState):
+
+    memory_doc = Document(
+        page_content=f"""
+        User Query: {state['user_query']}
+
+        Assistant Answer: {state['final_answer']}
+
+        """.strip(),
+
+        metadata={
+            "memory_id": str(uuid.uuid4()),
+            "conversation_id": state["conversation_id"],
+            "turn": state["turn"],
+            "role": "conversation",
+            "timestamp": datetime.now().isoformat(),
+            "memory_type": "working memory",
+            "importance": 1.0
+        }
+
+    )
+
+    working_memory.add_documents([memory_doc])
+    state["turn"] += 1
+    print("\n Working Memory updated with new document")
+
+    return state
+
+def memory_retrieval(state: GraphState):
+
+    docs = working_memory.similarity_search(
+
+        query = state["user_query"],
+        k=4,
+        filter = {
+            "conversation_id": state["conversation_id"]
+        }
+    )
+
+    state["retrieval_memory"] = docs
+    print("\n Working Memory Retrieval")
+
+    for i , doc in enumerate(docs, start=1):
+        print("=" * 80)
+        print(f"Document {i}:")
+        print(doc.page_content)
+        print("=" * 80)
+
+    return state
 
 def retrieval_fewshot_examples(state: GraphState):
 
@@ -178,18 +285,6 @@ class Decomposition_query(BaseModel):
     )
 
 decom_llm = llm.with_structured_output(Decomposition_query)
-
-def retrieve_memory(state: GraphState):
-
-    history = state.get("conversation_history", [])
-
-    # Last 6 messages
-    state["retrieved_memory"] = history[-6:]
-
-    print("\nWorking Memory")
-    print(state["retrieved_memory"])
-
-    return state
 
 decompose_prompt = """
         You are an expert Query Decomposition Assistant.
@@ -265,7 +360,8 @@ class RouterRespones(BaseModel):
         Literal[
             "docker",
             "ai_agent",
-            "aws"
+            "aws",
+            "memory_vector"
         ]
     ]
 
@@ -474,7 +570,7 @@ def reranked_document(state: GraphState):
         reverse=True
     )
 
-    TOP_K = 8
+    TOP_K = 2
     MIN_SCORE = -2.0
 
     filtered = [
@@ -502,6 +598,16 @@ compression_prompt = """ You are an Evidence Extraction system.
     5. Copy only relevant facts from the document.
     6. Remove copyright, page numbers and headers.
     7. Preserve commands exactly as written.
+
+    Return ONLY the information required to answer the user's question.
+
+    Maximum:
+    - 8 bullet points
+    OR
+    - 120 words
+
+    Do not explain.
+    Do not summarize unrelated content.
 
     User Question
 
@@ -538,7 +644,7 @@ def context_compression(state: GraphState):
 
         state["compressed_evidence"] = compressed
 
-        return state
+    return state
 
 def context_builder(state: GraphState):
 
@@ -552,17 +658,16 @@ def context_builder(state: GraphState):
     # Working Memory
     # -------------------------
 
-    memory = state.get("retrieved_memory", [])
+    for doc in state["retrieval_memory"]:
 
-    if memory:
+        context += f"""
+            Conversation Memory
 
-        context += "===== Conversation History =====\n"
+            {doc.page_content}
 
-        for msg in memory:
+            ----------------------------------------
 
-            context += f"{msg['role']}: {msg['content']}\n"
-
-        context += "\n"
+    """
 
     # -------------------------
     # Retrieved Documents
@@ -620,56 +725,67 @@ def show_retrieval_results(state: GraphState):
 
     return state
 
-def update_memory(state):
-
-    history = state.get("conversation_history", [])
-
-    history.append(
-        {
-            "role": "user",
-            "content": state["user_query"]
-        }
-    )
-
-    # Later you'll also append assistant answer
-
-    state["conversation_history"] = history
-
-    return state
-
 ANSWER_PROMPT = """
-You are a Retrieval-Augmented AI Assistant.
+    You are a Retrieval-Augmented AI Assistant.
 
-Use ONLY the retrieved evidence.
+    Use the conversation memory when it is relevant to understanding
+    the current user question.
 
-If the answer cannot be answered from the retrieved evidence, say:
+    Use the retrieved knowledge as the factual source for your answer.
 
-"I don't have enough information."
+    Rules:
 
-Never invent evidence.
+    1. Use conversation memory only for conversational context.
+    2. Use retrieved knowledge for factual answers.
+    3. If the answer is not present in the retrieved knowledge, say:
+    "I don't have enough information."
+    4. Never invent facts.
+    5. Never invent documents.
 
-Never invent documents.
+    ==================================================
 
-Never continue writing retrieved evidence.
+    Conversation Memory
 
-Respond ONLY with the final answer.
+    {memory}
 
-Retrieved Evidence
+    ==================================================
 
-{context}
+    Retrieved Knowledge
 
-Question
+    {context}
 
-{question}
+    ==================================================
 
-Final Answer:
+    Question
+
+    {question}
+
+    ==================================================
+
+    Final Answer:
 """
 
 def prompt_builder(state: GraphState):
 
+    # 
+    memory_context = ""
+
+    for i, doc in enumerate(state["retrieval_memory"], start=1):
+
+        memory_context += f"""
+        ========================== Conversation Memory {i} ==================================
+
+        Content:
+        {doc.page_content}
+
+        ======================================================================================
+
+        """
+    state["hybrid_memory"] = memory_context
+
     prompt = ANSWER_PROMPT.format(
 
-        memory=state.get("memory_context", ""),
+        memory = state["hybrid_memory"],
 
         context=state["context"],
 
@@ -677,14 +793,20 @@ def prompt_builder(state: GraphState):
 
     )
 
+    print("=" * 80)
+    print("Prompt characters:", len(prompt))
+    print("Approx tokens:", len(prompt) // 4)
+    print("=" * 80)
+
     state["final_prompt"] = prompt
 
-    print("=" * 120)
-    print("FINAL PROMPT")
-    print("=" * 120)
-    print(prompt)
+
 
     return state
+
+    prompt = state["final_prompt"]
+
+
 
 def generate_answer(state: GraphState):
 
@@ -711,9 +833,13 @@ def show_final_answer(state: GraphState):
 
 workflow = StateGraph(GraphState)
 
-workflow.add_node("retrieval_fewshot_examples", retrieval_fewshot_examples)
+workflow.add_node("memory_orchestrator", memory_orchestrator)
 
-workflow.add_node("retrieve_memory", retrieve_memory)
+# workflow.add_node("update_memory", update_memory)
+
+workflow.add_node("memory_retrieval", memory_retrieval)
+
+workflow.add_node("retrieval_fewshot_examples", retrieval_fewshot_examples)
 
 workflow.add_node("decompose_query", decompose_query)
 
@@ -750,11 +876,11 @@ workflow.add_node("show_final_answer", show_final_answer)
 
 workflow.add_edge(START, "retrieval_fewshot_examples")
 
-workflow.add_edge("retrieval_fewshot_examples", "decompose_query")
+workflow.add_edge("retrieval_fewshot_examples", "memory_retrieval")
 
-workflow.add_edge("decompose_query", "retrieve_memory")
+workflow.add_edge("memory_retrieval", "decompose_query")
 
-workflow.add_edge("retrieve_memory", "Route_Query")
+workflow.add_edge("decompose_query", "Route_Query")
 
 workflow.add_edge("Route_Query", "rrf_fusion")
 
@@ -768,25 +894,38 @@ workflow.add_edge("context_compression", "context_builder")
 
 workflow.add_edge("context_builder", "show_retrieval_results")
 
-workflow.add_edge("show_retrieval_results", "update_memory")
-
-workflow.add_edge("update_memory", "prompt_builder")
+workflow.add_edge("show_retrieval_results", "prompt_builder")
 
 workflow.add_edge("prompt_builder", "generate_answer")
 
-workflow.add_edge("generate_answer", "show_final_answer")
+workflow.add_edge("generate_answer", "update_memory")
+
+workflow.add_edge("update_memory", "show_final_answer")
 
 workflow.add_edge("show_final_answer", END)
 
 graph = workflow.compile()
 
-state = {
-    "original_query" : input("\n enter user query")
-}
+conversation_id = str(uuid.uuid4())
+turn = 1
 
-state["user_query"] = state["original_query"]
+while True:
 
-result = graph.invoke(state)
+    query = input("\n Enter User Query: ")
+
+    if query.lower() in ["exit", "quit"]:
+        print("Exiting...")
+        break
+
+    state = {
+        "conversation_id": conversation_id,
+        "turn": turn,
+        "original_query": query,
+        "user_query": query
+    }
+
+    result = graph.invoke(state)
+    turn += 1
 
 from IPython.display import Image, display
 
