@@ -60,7 +60,7 @@ few_shot = Chroma(
 )
 # all retrival dictionary
 
-working_memory = Chroma(
+working_memory_vs = Chroma(
     persist_directory="db/memory_vector",
     embedding_function=embeddings
 )
@@ -100,9 +100,12 @@ class GraphState(TypedDict, total=False):
     # memory layer
     conversation_id : str
     conversation_history : list
-    retrieval_memory : list[Document]
+    # retrieval_memory : list[Document]
     turn : int
     hybrid_memory : str
+    semantic_memory : list[Document]
+    episodic_memory : list[Document]
+    working_memory : list[Document]
 
     # few-shot-retrieval
     few_shot_examples : list[Document]
@@ -217,7 +220,7 @@ def update_memory(state: GraphState):
 
     )
 
-    working_memory.add_documents([memory_doc])
+    working_memory_vs.add_documents([memory_doc])
     state["turn"] += 1
     print("\n Working Memory updated with new document")
 
@@ -225,7 +228,7 @@ def update_memory(state: GraphState):
 
 def memory_retrieval(state: GraphState):
 
-    docs = working_memory.similarity_search(
+    docs = working_memory_vs.similarity_search(
 
         query = state["user_query"],
         k=4,
@@ -234,7 +237,7 @@ def memory_retrieval(state: GraphState):
         }
     )
 
-    state["retrieval_memory"] = docs
+    state["working_memory"] = docs
     print("\n Working Memory Retrieval")
 
     for i , doc in enumerate(docs, start=1):
@@ -287,44 +290,59 @@ class Decomposition_query(BaseModel):
 decom_llm = llm.with_structured_output(Decomposition_query)
 
 decompose_prompt = """
-        You are an expert Query Decomposition Assistant.
+    You are an expert Query Decomposition Assistant.
 
-        Your job is to decompose only complex questions into independent retrieval queries.
+    Your job is to convert the user's question into the minimum number of
+    independent retrieval queries.
 
-        Rules:
+    Rules:
 
-        1. Each sub-query must retrieve one specific piece of information.
-        2. Do NOT create overlapping questions.
-        3. Keep the minimum number of sub-queries.
-        4. Every sub-query must be independently understandable.
-        5. Never use pronouns like:
-        - it
-        - they
-        - this
-        6. Repeat the subject whenever necessary.
-        7. If the question is simple, return exactly one sub-query.
-        8. Return ONLY the list of sub-queries.
+    1. If conversation memory contains the missing subject,
+    use it to resolve references such as:
 
-        --------------------------------------------------
+    - it
+    - this
+    - that
+    - they
+    - those
 
-        Here are some examples.
+    2. Never invent information.
 
-        {examples}
+    3. Use ONLY the conversation memory when resolving references.
 
-        --------------------------------------------------
+    4. If the question is already complete,
+    do not modify it.
 
-        User Question
+    5. Generate the minimum number of retrieval queries.
 
-        {query}
+    6. Return ONLY the list of sub-queries.
+
+    --------------------------------------------------
+
+    Conversation Memory
+
+    {memory}
+
+    --------------------------------------------------
+
+    Few-shot Examples
+
+    {few_shot_examples}
+
+    --------------------------------------------------
+
+    Current User Question
+
+    {query}
 """
 
 def decompose_query(state: GraphState):
 
-    examples = ""
+    few_shot_examples = ""
 
     for index, doc in enumerate(state["few_shot_examples"], start=1):
 
-        examples += f"""
+        few_shot_examples += f"""
             Example {index}
 
             Question:
@@ -334,13 +352,14 @@ def decompose_query(state: GraphState):
         """
 
         for i, q in enumerate(doc.metadata["sub_query"], start=1):
-            examples += f"\n{i}. {q}"
+            few_shot_examples += f"\n{i}. {q}"
 
-        examples += "\n\n"
+        few_shot_examples += "\n\n"
 
     prompt = decompose_prompt.format(
-        examples=examples,
-        query=state["user_query"]
+        query = state["user_query"],
+        memory = state["hybrid_memory"],
+        few_shot_examples = few_shot_examples
     )
 
     print("="*120)
@@ -657,7 +676,7 @@ def context_builder(state: GraphState):
     # Working Memory
     # -------------------------
 
-    for doc in state["retrieval_memory"]:
+    for doc in state["working_memory"]:
 
         context += f"""
             Conversation Memory
@@ -724,6 +743,92 @@ def show_retrieval_results(state: GraphState):
 
     return state
 
+def memory_fusion(state: GraphState):
+
+    memory_text = []
+
+    # ======================================================
+    # Working Memory
+    # ======================================================
+
+    working_docs = state.get("working_memory", [])
+
+    if working_docs:
+
+        memory_text.append(
+            "================ WORKING MEMORY ================\n"
+        )
+
+        for i, doc in enumerate(working_docs, start=1):
+
+            memory_text.append(
+                f"""
+        Memory {i}
+
+        {doc.page_content}
+
+        ----------------------------------------
+        """
+                    )
+
+    # ======================================================
+    # Episodic Memory
+    # (Future)
+    # ======================================================
+
+    episodic_docs = state.get("episodic_memory", [])
+
+    if episodic_docs:
+
+        memory_text.append(
+            "\n================ EPISODIC MEMORY ================\n"
+        )
+
+        for i, doc in enumerate(episodic_docs, start=1):
+
+            memory_text.append(
+                f"""
+        Episode {i}
+
+        {doc.page_content}
+
+        ----------------------------------------
+        """
+                    )
+
+    # ======================================================
+    # Semantic Memory
+    # (Future)
+    # ======================================================
+
+    semantic_docs = state.get("semantic_memory", [])
+
+    if semantic_docs:
+
+        memory_text.append(
+            "\n================ SEMANTIC MEMORY ================\n"
+        )
+
+        for i, doc in enumerate(semantic_docs, start=1):
+
+            memory_text.append(
+                f"""
+        Knowledge {i}
+
+        {doc.page_content}
+
+        ----------------------------------------
+        """
+                    )
+
+    state["hybrid_memory"] = "\n".join(memory_text)
+
+    print("=" * 100)
+    print("HYBRID MEMORY")
+    print("=" * 100)
+
+    return state
+
 ANSWER_PROMPT = """
     You are a Retrieval-Augmented AI Assistant.
 
@@ -745,7 +850,7 @@ ANSWER_PROMPT = """
 
     Conversation Memory
 
-    {memory}
+    {hybrid_memory}
 
     ==================================================
 
@@ -766,25 +871,9 @@ ANSWER_PROMPT = """
 
 def prompt_builder(state: GraphState):
 
-    # 
-    memory_context = ""
-
-    for i, doc in enumerate(state["retrieval_memory"], start=1):
-
-        memory_context += f"""
-        ========================== Conversation Memory {i} ==================================
-
-        Content:
-        {doc.page_content}
-
-        ======================================================================================
-
-        """
-    state["hybrid_memory"] = memory_context
-
     prompt = ANSWER_PROMPT.format(
 
-        memory = state["hybrid_memory"],
+        hybrid_memory=state["hybrid_memory"],
 
         context=state["context"],
 
@@ -798,14 +887,7 @@ def prompt_builder(state: GraphState):
     print("=" * 80)
 
     state["final_prompt"] = prompt
-
-
-
     return state
-
-    prompt = state["final_prompt"]
-
-
 
 def generate_answer(state: GraphState):
 
@@ -834,9 +916,9 @@ workflow = StateGraph(GraphState)
 
 workflow.add_node("memory_orchestrator", memory_orchestrator)
 
-# workflow.add_node("update_memory", update_memory)
-
 workflow.add_node("memory_retrieval", memory_retrieval)
+
+workflow.add_node("memory_fusion",memory_fusion)
 
 workflow.add_node("retrieval_fewshot_examples", retrieval_fewshot_examples)
 
@@ -877,7 +959,9 @@ workflow.add_edge(START, "retrieval_fewshot_examples")
 
 workflow.add_edge("retrieval_fewshot_examples", "memory_retrieval")
 
-workflow.add_edge("memory_retrieval", "decompose_query")
+workflow.add_edge("memory_retrieval", "memory_fusion")
+
+workflow.add_edge("memory_fusion", "decompose_query")
 
 workflow.add_edge("decompose_query", "Route_Query")
 
