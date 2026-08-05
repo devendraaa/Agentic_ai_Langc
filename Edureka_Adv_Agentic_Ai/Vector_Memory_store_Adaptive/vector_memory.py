@@ -123,6 +123,75 @@ class GraphState(TypedDict, total=False):
     #memory orchestration
     memory_plan : list[dict]
 
+    #query rewriter using memory layer
+    rewritten_query : str 
+
+QUERY_REWRITE_PROMPT = """
+    You are an expert conversational query rewriting assistant.
+
+    Your ONLY task is to rewrite the user's latest question into a complete,
+    standalone question.
+
+    You MUST use the conversation memory when necessary.
+
+    Rules
+
+    1. Produce a concise standalone retrieval query.
+
+    2. Remove conversational words such as:
+
+    - I want
+    - I would like
+    - also
+    - please
+    - as an engineer
+    - as a beginner
+
+    unless they change the meaning.
+
+    3. Keep only information useful for retrieval.
+
+    4. Never answer the question.
+
+    5. Never decompose the question.
+
+    6. Return exactly one rewritten question.
+
+    Return ONLY the rewritten question.
+
+    --------------------------------------------------
+
+    Conversation Memory
+
+    {memory}
+
+    --------------------------------------------------
+
+    Current User Question
+
+    {question}
+
+    --------------------------------------------------
+
+    Standalone Question
+"""
+
+def query_rewriter(state: GraphState):
+
+    prompt = QUERY_REWRITE_PROMPT.format(
+        memory = state["hybrid_memory"],
+        question = state["user_query"]
+    )
+
+    response = llm.invoke(prompt)
+
+    state["rewritten_query"] = response.content.strip()
+
+    print("\n Rewritten Query:")
+    print(state["rewritten_query"])
+
+    return state
+
 MEMORY_KEYWORDS = {
     "continue",
     "previous",
@@ -255,9 +324,9 @@ def retrieval_fewshot_examples(state: GraphState):
 
     state["few_shot_examples"] = docs
 
-    for doc in docs:
-        print(doc.page_content)
-        print("=" * 80)
+    # for doc in docs:
+    #     print(doc.page_content)
+    #     print("=" * 80)
 
     return state
 
@@ -297,25 +366,43 @@ decompose_prompt = """
 
     Rules:
 
-    1. If conversation memory contains the missing subject,
-    use it to resolve references such as:
+    Before generating sub-queries,
+    determine whether the current question depends on previous conversation.
 
-    - it
-    - this
-    - that
-    - they
-    - those
+    If yes,
 
-    2. Never invent information.
+    rewrite the question into a standalone question by explicitly including
+    the missing entity from the conversation memory.
 
-    3. Use ONLY the conversation memory when resolving references.
+    Examples
 
-    4. If the question is already complete,
-    do not modify it.
+    Conversation
 
-    5. Generate the minimum number of retrieval queries.
+    User:
+    Explain AI Agent.
 
-    6. Return ONLY the list of sub-queries.
+    Current Question
+
+    How do I deploy to AWS?
+
+    Rewrite
+
+    How do I deploy an AI Agent to AWS?
+
+    --------------------------------
+
+    Conversation
+
+    User:
+    Teach Docker.
+
+    Current Question
+
+    How do I deploy it?
+
+    Rewrite
+
+    How do I deploy Docker containers?
 
     --------------------------------------------------
 
@@ -357,14 +444,14 @@ def decompose_query(state: GraphState):
         few_shot_examples += "\n\n"
 
     prompt = decompose_prompt.format(
-        query = state["user_query"],
+        query = state["rewritten_query"],
         memory = state["hybrid_memory"],
         few_shot_examples = few_shot_examples
     )
 
-    print("="*120)
-    print(prompt)
-    print("="*120)
+    # print("="*120)
+    # print(prompt)
+    # print("="*120)
 
     response = decom_llm.invoke(prompt)
 
@@ -400,11 +487,6 @@ router_prompt = """
 """
 
 def Route_Query(state : GraphState):
-
-    # if state["query_type"] == "simple":
-    #     state["sub_queries"] = [
-    #         state["user_query"]
-    #         ]
 
     hop_res = []
 
@@ -662,6 +744,11 @@ def context_compression(state: GraphState):
 
         state["compressed_evidence"] = compressed
 
+    if not state["reranked_evidence"]:
+        print("No compressed evidence found.")
+        state["compressed_evidence"] = []
+        return state
+
     return state
 
 def context_builder(state: GraphState):
@@ -832,10 +919,17 @@ def memory_fusion(state: GraphState):
 ANSWER_PROMPT = """
     You are a Retrieval-Augmented AI Assistant.
 
-    Use the conversation memory when it is relevant to understanding
-    the current user question.
+    Conversation Memory is only for understanding
+    the user's context and previous discussion.
 
-    Use the retrieved knowledge as the factual source for your answer.
+    Do NOT use conversation memory as factual evidence.
+
+    Use Retrieved Knowledge for all factual answers.
+
+    If Retrieved Knowledge is empty,
+    respond:
+
+    "I don't have enough information."
 
     Rules:
 
@@ -914,6 +1008,8 @@ def show_final_answer(state: GraphState):
 
 workflow = StateGraph(GraphState)
 
+workflow.add_node("query_rewriter", query_rewriter)
+
 workflow.add_node("memory_orchestrator", memory_orchestrator)
 
 workflow.add_node("memory_retrieval", memory_retrieval)
@@ -955,13 +1051,15 @@ workflow.add_node("show_final_answer", show_final_answer)
     # "multi_hop": "decompose_query"
 # })
 
-workflow.add_edge(START, "retrieval_fewshot_examples")
-
-workflow.add_edge("retrieval_fewshot_examples", "memory_retrieval")
+workflow.add_edge(START, "memory_retrieval")
 
 workflow.add_edge("memory_retrieval", "memory_fusion")
 
-workflow.add_edge("memory_fusion", "decompose_query")
+workflow.add_edge("memory_fusion", "query_rewriter")
+
+workflow.add_edge("query_rewriter", "retrieval_fewshot_examples")
+
+workflow.add_edge("retrieval_fewshot_examples", "decompose_query")
 
 workflow.add_edge("decompose_query", "Route_Query")
 
