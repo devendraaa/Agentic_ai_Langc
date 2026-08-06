@@ -100,7 +100,6 @@ class GraphState(TypedDict, total=False):
     # memory layer
     conversation_id : str
     conversation_history : list
-    # retrieval_memory : list[Document]
     turn : int
     hybrid_memory : str
     semantic_memory : list[Document]
@@ -122,9 +121,320 @@ class GraphState(TypedDict, total=False):
 
     #memory orchestration
     memory_plan : list[dict]
+    episode: str
+    episode_type : str
+    important_score : float
+    store_episode : bool
 
     #query rewriter using memory layer
     rewritten_query : str 
+
+    #intent classifier
+    knowledge_retrieval: bool
+    memory_update: bool
+
+class IntentQuery(BaseModel):
+    knowledge_retrieval: bool
+    memory_update: bool
+
+INTENT_PROMPT = """
+    You are an Intent Classifier.
+
+    Your task is to determine whether the user's message requires:
+
+    1. Knowledge Retrieval
+    2. Memory Update
+
+    Either one or BOTH may be True.
+
+    Examples
+
+    User:
+    What is Docker?
+
+    knowledge_retrieval=True
+    memory_update=False
+
+    ----------------------------
+
+    User:
+    I completed Docker certification.
+
+    knowledge_retrieval=False
+    memory_update=True
+
+    ----------------------------
+
+    User:
+    I completed Docker certification.
+    What should I learn next?
+
+    knowledge_retrieval=True
+    memory_update=True
+
+    ----------------------------
+
+    User:
+    Thanks!
+
+    knowledge_retrieval=False
+    memory_update=False
+
+    ----------------------------
+
+    User Message
+
+    {query}
+"""
+
+intent_llm = llm.with_structured_output(IntentQuery)
+
+def Intent_Classifier(state: GraphState):
+
+    prompt = INTENT_PROMPT.format(
+        query = state["user_query"]
+    )
+
+    response = intent_llm.invoke(prompt)
+
+    state["knowledge_retrieval"] = response.knowledge_retrieval
+    state["memory_update"] = response.memory_update
+
+    print("intend classifier Knowledge Retrieval: ", state["knowledge_retrieval"])
+    print("intend classifier Memory Retrieval: ", state["memory_update"])
+
+    return state
+
+def route_int_query(state: GraphState):
+    if state["knowledge_retrieval"]:
+        return "knowledge_pipeline"
+    
+    return "memory_pipeline"
+
+class ImportantScore(BaseModel):
+
+    importance: float = Field(
+        description="Importance score between 0 and 1."
+    )
+
+    store: bool = Field(
+        description="Whether the episode should be stored."
+    )
+
+    reason: str = Field(
+        description="Reason for the score."
+    )
+
+IMPORTANCE_PROMPT = """
+    You are an Episodic Memory Importance Evaluator.
+
+    Your task is to decide whether the extracted episode
+    should become long-term memory.
+
+    Give a score between 0 and 1.
+
+    Guidelines
+
+    1. Long-term career goals
+
+    0.9+
+
+    2. Completed achievements
+
+    0.9+
+
+    3. Projects
+
+    0.8+
+
+    4. Stable preferences
+
+    0.7+
+
+    5. Learning progress
+
+    0.6+
+
+    6. Temporary questions
+
+    0.1
+
+    7. Greetings
+
+    0.0
+
+    Episode
+
+    {episode}
+"""
+
+importance_llm = llm.with_structured_output(ImportantScore)
+
+def importance_scorer(state: GraphState):
+
+    if not state["episode"]:
+
+        state["importance_score"] = 0.0
+        state["store_episode"] = False
+
+        return state
+
+    prompt = IMPORTANCE_PROMPT.format(
+
+        episode=state["episode"]
+
+    )
+
+    response = importance_llm.invoke(prompt)
+
+    state["importance_score"] = response.importance
+
+    state["store_episode"] = (
+        response.store and response.importance >= 0.7
+                )
+    print("=" * 100)
+    print("IMPORTANCE SCORER")
+
+    print("Episode :", state["episode"])
+
+    print("Importance :", response.importance)
+
+    print("Store :", response.store)
+
+    print("Reason :", response.reason)
+
+    return state
+
+class Episode(BaseModel):
+
+    should_store: bool = Field(
+        description="whether the current conversation should be stored in episodic memory")
+
+    episode: str = Field(
+        description="A concise summary of the important expieriences from the current conversation that should be stored in episodic memory")
+
+    episode_type: Literal[
+        "achievement",
+        "learning",
+        "preference",
+        "goal",
+        "project",
+        "other"]
+
+episode_llm = llm.with_structured_output(Episode)
+
+EPISODE_PROMPT = """
+You are an Episodic Memory Extractor.
+
+Your job is to determine whether the USER explicitly shared
+long-term information that should be remembered.
+
+IMPORTANT RULES
+
+• Only extract facts explicitly stated by the user.
+• Never infer.
+• Never assume.
+• Never guess.
+• Never conclude that the user learned something unless they explicitly say so.
+• Never conclude that the user completed something unless they explicitly say so.
+• Never create memories from the assistant's answer.
+
+The Assistant Answer is context only.
+Do NOT extract facts from it.
+
+Store information such as:
+
+✓ Career
+✓ Long-term goals
+✓ Achievements
+✓ Ongoing projects
+✓ Stable preferences
+✓ Skills explicitly claimed by the user
+
+Do NOT store:
+
+✗ Greetings
+✗ Temporary factual questions
+✗ One-off requests
+✗ Information stated only by the assistant
+
+Example
+
+User:
+I completed Docker certification.
+
+Decision:
+Store this conversation.
+
+Summary:
+User completed Docker certification.
+
+----------------------------------------
+
+Example
+
+User:
+What is Docker?
+
+Decision:
+Do not store this conversation.
+
+----------------------------------------
+
+Example
+
+User:
+I am an AWS developer.
+
+Decision:
+Store this conversation.
+
+Summary:
+User is an AWS developer.
+
+----------------------------------------
+
+User Query
+
+{query}
+
+----------------------------------------
+
+Assistant Answer (Context Only)
+
+{answer}
+
+Analyze the conversation according to the rules above and produce the structured output.
+"""
+
+def memory_candidate(state: GraphState):
+
+    prompt = EPISODE_PROMPT.format(
+        query = state["user_query"],
+        answer = state.get("final_answer", "")
+    )
+
+    response  = episode_llm.invoke(prompt)
+
+    if response.should_store:
+
+        state["episode"] = response.episode
+        state["episode_type"] = response.episode_type
+
+    else:
+        state["episode"] = ""
+        state["episode_type"] = ""
+
+    print("=" * 100)
+    print("EPISODIC MEMORY")
+
+    print("Store :", response.should_store)
+
+    print("Episode :", response.episode)
+
+    print("Type :", response.episode_type)
+
+    return state
 
 QUERY_REWRITE_PROMPT = """
     You are an expert conversational query rewriting assistant.
@@ -940,6 +1250,16 @@ ANSWER_PROMPT = """
     4. Never invent facts.
     5. Never invent documents.
 
+    If retrieved knowledge is insufficient,
+
+    DO NOT provide general advice.
+
+    DO NOT speculate.
+
+    Respond only:
+
+    "I don't have enough information."
+
     ==================================================
 
     Conversation Memory
@@ -1002,11 +1322,15 @@ def show_final_answer(state: GraphState):
     print("FINAL ANSWER")
     print("=" * 120)
 
-    print(state["final_answer"])
+    print(state.get("final_answer", ""))
 
     return state
 
 workflow = StateGraph(GraphState)
+
+workflow.add_node("Intent_Classifier", Intent_Classifier)
+
+workflow.add_node("route_int_query", route_int_query)
 
 workflow.add_node("query_rewriter", query_rewriter)
 
@@ -1036,6 +1360,10 @@ workflow.add_node("show_retrieval_results", show_retrieval_results)
 
 workflow.add_node("update_memory", update_memory)
 
+workflow.add_node("importance_scorer", importance_scorer)
+
+workflow.add_node("memory_candidate", memory_candidate)
+
 workflow.add_node("prompt_builder", prompt_builder)
 
 workflow.add_node("generate_answer", generate_answer)
@@ -1051,7 +1379,14 @@ workflow.add_node("show_final_answer", show_final_answer)
     # "multi_hop": "decompose_query"
 # })
 
-workflow.add_edge(START, "memory_retrieval")
+workflow.add_edge(START, "Intent_Classifier")
+
+workflow.add_conditional_edges("Intent_Classifier", 
+                               route_int_query,
+                               {
+                                "knowledge_pipeline": "memory_retrieval",
+                                "memory_pipeline": "memory_candidate"
+                               })
 
 workflow.add_edge("memory_retrieval", "memory_fusion")
 
@@ -1081,7 +1416,11 @@ workflow.add_edge("prompt_builder", "generate_answer")
 
 workflow.add_edge("generate_answer", "update_memory")
 
-workflow.add_edge("update_memory", "show_final_answer")
+workflow.add_edge("update_memory", "memory_candidate")
+
+workflow.add_edge("memory_candidate", "importance_scorer")
+
+workflow.add_edge("importance_scorer", "show_final_answer")
 
 workflow.add_edge("show_final_answer", END)
 
