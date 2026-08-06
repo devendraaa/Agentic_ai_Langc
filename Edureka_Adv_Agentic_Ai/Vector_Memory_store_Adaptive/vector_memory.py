@@ -58,10 +58,15 @@ few_shot = Chroma(
     persist_directory="db/db/few_shot",
     embedding_function=embeddings
 )
-# all retrival dictionary
 
+# all retrival dictionary
 working_memory_vs = Chroma(
     persist_directory="db/memory_vector",
+    embedding_function=embeddings
+)
+
+episodic_memory = Chroma(
+    persist_directory="db/episodic_memory",
     embedding_function=embeddings
 )
 
@@ -123,7 +128,7 @@ class GraphState(TypedDict, total=False):
     memory_plan : list[dict]
     episode: str
     episode_type : str
-    important_score : float
+    importance_score : float
     store_episode : bool
 
     #query rewriter using memory layer
@@ -206,10 +211,27 @@ def Intent_Classifier(state: GraphState):
     return state
 
 def route_int_query(state: GraphState):
+
     if state["knowledge_retrieval"]:
         return "knowledge_pipeline"
-    
-    return "memory_pipeline"
+
+    if state["memory_update"]:
+        return "memory_pipeline"
+
+    return "no_action"
+
+def route_memory_update(state: GraphState):
+
+    if state["memory_update"]:
+        return "update_memory"
+
+    return "finish"
+
+def no_action(state: GraphState):
+
+    state["final_answer"] = ""
+
+    return state
 
 class ImportantScore(BaseModel):
 
@@ -292,6 +314,7 @@ def importance_scorer(state: GraphState):
     state["store_episode"] = (
         response.store and response.importance >= 0.7
                 )
+    
     print("=" * 100)
     print("IMPORTANCE SCORER")
 
@@ -302,6 +325,57 @@ def importance_scorer(state: GraphState):
     print("Store :", response.store)
 
     print("Reason :", response.reason)
+
+    return state
+
+def episodic_writer(state: GraphState):
+
+    struc_episodic = [Document(
+        page_content = state["episode"],
+
+        metadata = {
+
+            "conversation_id": state["conversation_id"],
+
+            "episode_type": state["episode_type"],
+
+            # "importance": state["importance_score"],
+
+            "created_at": datetime.now().isoformat(),
+
+            "memory_type": "episodic"
+
+        }
+    )]
+
+    if state["store_episode"]:
+
+        episodic_memory.add_documents(struc_episodic)
+
+        print("episodic memory stored perfectly")
+
+def episodic_mem_ret(state: GraphState):
+
+    docs = episodic_memory.similarity_search(
+        query = state["user_query"],
+        k = 5
+    )
+
+    state["episodic_memory"] = docs
+
+    print("\n" + "=" * 100)
+    print("EPISODIC MEMORY RETRIEVAL")
+    print("=" * 100)
+
+    if not docs:
+        print("No episodic memory found.")
+
+    for i, doc in enumerate(docs, start=1):
+
+        print(f"\nEpisode {i}:")
+        print(doc.page_content)
+        print("Type:", doc.metadata.get("episode_type"))
+        print("-" * 100)
 
     return state
 
@@ -435,39 +509,45 @@ def memory_candidate(state: GraphState):
     print("Type :", response.episode_type)
 
     return state
-
+  
 QUERY_REWRITE_PROMPT = """
     You are an expert conversational query rewriting assistant.
 
-    Your ONLY task is to rewrite the user's latest question into a complete,
-    standalone question.
+    Your task is to rewrite the user's latest message into
+    one complete standalone retrieval query.
 
-    You MUST use the conversation memory when necessary.
+    You have access to conversation memory.
 
-    Rules
+    IMPORTANT RULES
 
-    1. Produce a concise standalone retrieval query.
+    1. Resolve references using conversation memory.
 
-    2. Remove conversational words such as:
+    2. Preserve user-specific information when it changes
+    what information should be retrieved.
 
-    - I want
-    - I would like
-    - also
-    - please
-    - as an engineer
-    - as a beginner
+    Examples of useful user-specific information:
 
-    unless they change the meaning.
+    - career
+    - skills
+    - experience
+    - certifications
+    - goals
+    - projects
+    - stable preferences
 
-    3. Keep only information useful for retrieval.
+    3. Remove filler words only when removing them does
+    not change retrieval intent.
 
-    4. Never answer the question.
+    4. Do NOT remove relevant background information.
 
-    5. Never decompose the question.
+    5. Never invent information that is not present
+    in the conversation memory or current message.
 
-    6. Return exactly one rewritten question.
+    6. Never answer the question.
 
-    Return ONLY the rewritten question.
+    7. Never decompose the question.
+
+    8. Return exactly ONE standalone retrieval query.
 
     --------------------------------------------------
 
@@ -477,13 +557,13 @@ QUERY_REWRITE_PROMPT = """
 
     --------------------------------------------------
 
-    Current User Question
+    Current User Message
 
     {question}
 
     --------------------------------------------------
 
-    Standalone Question
+    Standalone Retrieval Query:
 """
 
 def query_rewriter(state: GraphState):
@@ -956,7 +1036,7 @@ def reranked_document(state: GraphState):
     for evidence in state["all_evidence"]:
       
         pairs.append((
-            state['user_query'],
+            state['rewritten_query'],
             evidence['document'].page_content
         )
     )
@@ -1031,16 +1111,26 @@ compression_prompt = """ You are an Evidence Extraction system.
                     """
 
 def context_compression(state: GraphState):
+
     compressed = []
+
+    if not state["reranked_evidence"]:
+
+        print("No compressed evidence found.")
+
+        state["compressed_evidence"] = []
+
+        return state
 
     for evidence in state["reranked_evidence"]:
 
         doc = evidence["document"]
 
         prompt = compression_prompt.format(
-            question=state["user_query"],
-            document=doc.page_content)
-        
+            question=state["rewritten_query"],
+            document=doc.page_content
+        )
+
         response = llm.invoke(prompt)
 
         compressed.append({
@@ -1052,50 +1142,20 @@ def context_compression(state: GraphState):
             "compressed_text": response.content.strip()
         })
 
-        state["compressed_evidence"] = compressed
-
-    if not state["reranked_evidence"]:
-        print("No compressed evidence found.")
-        state["compressed_evidence"] = []
-        return state
+    state["compressed_evidence"] = compressed
 
     return state
 
 def context_builder(state: GraphState):
 
-    MAX_CONTEXT_DOCS = 4
-
-    MAX_CHARS = 500
-
     context = ""
 
-    # -------------------------
-    # Working Memory
-    # -------------------------
-
-    for doc in state["working_memory"]:
-
-        context += f"""
-            Conversation Memory
-
-            {doc.page_content}
-
-            ----------------------------------------
-
-    """
-
-    # -------------------------
-    # Retrieved Documents
-    # -------------------------
-
     context += "===== Retrieved Knowledge =====\n\n"
-        # Document  = {i}
-            # CrossEncoder Score:
-        # {evidence["rerank_score"]:.3f}
 
-    for i, evidence in enumerate(state["compressed_evidence"], start=1):
-
-        # doc = evidence["document"]
+    for i, evidence in enumerate(
+        state["compressed_evidence"],
+        start=1
+    ):
 
         context += f"""
 
@@ -1109,13 +1169,11 @@ def context_builder(state: GraphState):
 
         Content:
         {evidence['compressed_text']}
-                            """
+
+        ----------------------------------------
+        """
 
     state["context"] = context
-
-    if DEBUG:
-        print("\n\n===== Context Builder Output =====\n")
-        print(context)
 
     return state
 
@@ -1144,6 +1202,8 @@ def memory_fusion(state: GraphState):
 
     memory_text = []
 
+    seen = set()
+
     # ======================================================
     # Working Memory
     # ======================================================
@@ -1158,15 +1218,22 @@ def memory_fusion(state: GraphState):
 
         for i, doc in enumerate(working_docs, start=1):
 
+            content = doc.page_content.strip()
+
+            if content in seen:
+                continue
+
+            seen.add(content)
+
             memory_text.append(
                 f"""
-        Memory {i}
+                    Memory {i}
 
-        {doc.page_content}
+                    {content}
 
-        ----------------------------------------
-        """
-                    )
+                    ----------------------------------------
+                    """
+                )
 
     # ======================================================
     # Episodic Memory
@@ -1183,15 +1250,22 @@ def memory_fusion(state: GraphState):
 
         for i, doc in enumerate(episodic_docs, start=1):
 
+            content = doc.page_content.strip()
+
+            if content in seen:
+                continue
+
+            seen.add(content)
+
             memory_text.append(
                 f"""
-        Episode {i}
+            Episode {i}
 
-        {doc.page_content}
+            {content}
 
-        ----------------------------------------
-        """
-                    )
+            ----------------------------------------
+            """
+                        )
 
     # ======================================================
     # Semantic Memory
@@ -1208,21 +1282,30 @@ def memory_fusion(state: GraphState):
 
         for i, doc in enumerate(semantic_docs, start=1):
 
+            content = doc.page_content.strip()
+
+            if content in seen:
+                continue
+
+            seen.add(content)
+
             memory_text.append(
                 f"""
-        Knowledge {i}
+            Knowledge {i}
 
-        {doc.page_content}
+            {content}
 
-        ----------------------------------------
-        """
-                    )
+            ----------------------------------------
+            """
+                        )
 
     state["hybrid_memory"] = "\n".join(memory_text)
 
     print("=" * 100)
     print("HYBRID MEMORY")
     print("=" * 100)
+
+    print(state["hybrid_memory"])
 
     return state
 
@@ -1328,67 +1411,73 @@ def show_final_answer(state: GraphState):
 
 workflow = StateGraph(GraphState)
 
+workflow = StateGraph(GraphState)
+
+# ------------------------------------------------------------------
+# Nodes
+# ------------------------------------------------------------------
+
 workflow.add_node("Intent_Classifier", Intent_Classifier)
 
-workflow.add_node("route_int_query", route_int_query)
-
-workflow.add_node("query_rewriter", query_rewriter)
-
-workflow.add_node("memory_orchestrator", memory_orchestrator)
-
+# Knowledge Pipeline
 workflow.add_node("memory_retrieval", memory_retrieval)
-
-workflow.add_node("memory_fusion",memory_fusion)
-
+workflow.add_node("episodic_mem_ret", episodic_mem_ret)
+workflow.add_node("memory_fusion", memory_fusion)
+workflow.add_node("query_rewriter", query_rewriter)
 workflow.add_node("retrieval_fewshot_examples", retrieval_fewshot_examples)
-
 workflow.add_node("decompose_query", decompose_query)
-
 workflow.add_node("Route_Query", Route_Query)
-
 workflow.add_node("rrf_fusion", rrf_fusion)
-
 workflow.add_node("aggregate_evidence", aggregate_evidence)
-
 workflow.add_node("reranked_document", reranked_document)
-
 workflow.add_node("context_compression", context_compression)
-
 workflow.add_node("context_builder", context_builder)
-
 workflow.add_node("show_retrieval_results", show_retrieval_results)
-
-workflow.add_node("update_memory", update_memory)
-
-workflow.add_node("importance_scorer", importance_scorer)
-
-workflow.add_node("memory_candidate", memory_candidate)
-
 workflow.add_node("prompt_builder", prompt_builder)
-
 workflow.add_node("generate_answer", generate_answer)
 
+# Working Memory
+workflow.add_node("update_memory", update_memory)
+
+# Long-term Memory
+workflow.add_node("memory_candidate", memory_candidate)
+workflow.add_node("importance_scorer", importance_scorer)
+workflow.add_node("episodic_writer", episodic_writer)
+
+# Utility
+workflow.add_node("no_action", no_action)
 workflow.add_node("show_final_answer", show_final_answer)
 
-# adding workflow edges
 
-# workflow.add_edge(START, "classify_query")
-
-# workflow.add_conditional_edges("classify_query", query_router,{
-    # "simple": "Route_Query",
-    # "multi_hop": "decompose_query"
-# })
+# ------------------------------------------------------------------
+# START
+# ------------------------------------------------------------------
 
 workflow.add_edge(START, "Intent_Classifier")
 
-workflow.add_conditional_edges("Intent_Classifier", 
-                               route_int_query,
-                               {
-                                "knowledge_pipeline": "memory_retrieval",
-                                "memory_pipeline": "memory_candidate"
-                               })
 
-workflow.add_edge("memory_retrieval", "memory_fusion")
+# ------------------------------------------------------------------
+# Intent Router
+# ------------------------------------------------------------------
+
+workflow.add_conditional_edges(
+    "Intent_Classifier",
+    route_int_query,
+    {
+        "knowledge_pipeline": "memory_retrieval",
+        "memory_pipeline": "memory_candidate",
+        "no_action": "show_final_answer",
+    },
+)
+
+
+# ------------------------------------------------------------------
+# Knowledge Pipeline
+# ------------------------------------------------------------------
+
+workflow.add_edge("memory_retrieval", "episodic_mem_ret")
+
+workflow.add_edge("episodic_mem_ret", "memory_fusion")
 
 workflow.add_edge("memory_fusion", "query_rewriter")
 
@@ -1416,13 +1505,39 @@ workflow.add_edge("prompt_builder", "generate_answer")
 
 workflow.add_edge("generate_answer", "update_memory")
 
-workflow.add_edge("update_memory", "memory_candidate")
+
+# ------------------------------------------------------------------
+# After Working Memory
+# Decide whether Episodic Memory should run
+# ------------------------------------------------------------------
+
+workflow.add_conditional_edges(
+    "update_memory",
+    route_memory_update,
+    {
+        "update_memory": "memory_candidate",
+        "finish": "show_final_answer",
+    },
+)
+
+
+# ------------------------------------------------------------------
+# Memory-only Pipeline
+# ------------------------------------------------------------------
 
 workflow.add_edge("memory_candidate", "importance_scorer")
 
-workflow.add_edge("importance_scorer", "show_final_answer")
+workflow.add_edge("importance_scorer", "episodic_writer")
+
+workflow.add_edge("episodic_writer", "show_final_answer")
+
+
+# ------------------------------------------------------------------
+# END
+# ------------------------------------------------------------------
 
 workflow.add_edge("show_final_answer", END)
+
 
 graph = workflow.compile()
 
