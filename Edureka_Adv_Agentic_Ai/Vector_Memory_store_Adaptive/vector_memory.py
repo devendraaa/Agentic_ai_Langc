@@ -37,7 +37,6 @@ embeddings = HuggingFaceEmbeddings(
 reranker = CrossEncoder(
     "cross-encoder/ms-marco-MiniLM-L-6-v2"
 )
-
 # vector store object
 docker = Chroma(
     persist_directory="db/docker",
@@ -130,6 +129,7 @@ class GraphState(TypedDict, total=False):
     episode_type : str
     importance_score : float
     store_episode : bool
+    memory_answer: str
 
     #query rewriter using memory layer
     rewritten_query : str 
@@ -137,10 +137,21 @@ class GraphState(TypedDict, total=False):
     #intent classifier
     knowledge_retrieval: bool
     memory_update: bool
+    memory_retrieval: bool
 
 class IntentQuery(BaseModel):
-    knowledge_retrieval: bool
-    memory_update: bool
+
+    knowledge_retrieval: bool = Field(
+        description="Whether external knowledge documents are required."
+    )
+
+    memory_retrieval: bool = Field(
+        description="Whether the user's previous conversation or long-term memory is required."
+    )
+
+    memory_update: bool = Field(
+        description="Whether the user's latest message contains information worth storing."
+    )
 
 INTENT_PROMPT = """
     You are an Intent Classifier.
@@ -149,8 +160,7 @@ INTENT_PROMPT = """
 
     1. Knowledge Retrieval
     2. Memory Update
-
-    Either one or BOTH may be True.
+    3. Memory Retrieval
 
     Examples
 
@@ -159,6 +169,7 @@ INTENT_PROMPT = """
 
     knowledge_retrieval=True
     memory_update=False
+    memory_retrieval=False
 
     ----------------------------
 
@@ -167,6 +178,7 @@ INTENT_PROMPT = """
 
     knowledge_retrieval=False
     memory_update=True
+    memory_retrieval=False
 
     ----------------------------
 
@@ -176,6 +188,27 @@ INTENT_PROMPT = """
 
     knowledge_retrieval=True
     memory_update=True
+    memory_retrieval=False
+
+    ----------------------------
+
+    User:
+    I completed Docker certification last month. 
+    What should I learn next based on my background?
+
+    knowledge_retrieval=True
+    memory_update=True
+    memory_retrieval=True
+
+    ----------------------------
+
+
+    User:
+    what skill set user has.
+
+    knowledge_retrieval=False
+    memory_update=False
+    memory_retrieval=True
 
     ----------------------------
 
@@ -184,6 +217,7 @@ INTENT_PROMPT = """
 
     knowledge_retrieval=False
     memory_update=False
+    memory_retrieval=False
 
     ----------------------------
 
@@ -204,19 +238,35 @@ def Intent_Classifier(state: GraphState):
 
     state["knowledge_retrieval"] = response.knowledge_retrieval
     state["memory_update"] = response.memory_update
+    state["memory_retrieval"] = response.memory_retrieval
 
     print("intend classifier Knowledge Retrieval: ", state["knowledge_retrieval"])
-    print("intend classifier Memory Retrieval: ", state["memory_update"])
+    print("intend classifier Memory update: ", state["memory_update"])
+    print("intend classifier Memory retrieval", state["memory_retrieval"])
 
     return state
 
 def route_int_query(state: GraphState):
 
-    if state["knowledge_retrieval"]:
+    knowledge = state["knowledge_retrieval"]
+    memory_retrieval = state["memory_retrieval"]
+    memory_update = state["memory_update"]
+
+    # Hybrid: knowledge + memory
+    if knowledge and memory_retrieval:
+        return "hybrid_memory_pipeline"
+
+    # Knowledge only
+    if knowledge:
         return "knowledge_pipeline"
 
-    if state["memory_update"]:
-        return "memory_pipeline"
+    # Memory retrieval only
+    if memory_retrieval:
+        return "memory_retrieval_pipeline"
+
+    # Memory update only
+    if memory_update:
+        return "memory_update_pipeline"
 
     return "no_action"
 
@@ -330,29 +380,25 @@ def importance_scorer(state: GraphState):
 
 def episodic_writer(state: GraphState):
 
-    struc_episodic = [Document(
-        page_content = state["episode"],
-
-        metadata = {
-
-            "conversation_id": state["conversation_id"],
-
-            "episode_type": state["episode_type"],
-
-            # "importance": state["importance_score"],
-
-            "created_at": datetime.now().isoformat(),
-
-            "memory_type": "episodic"
-
-        }
-    )]
-
     if state["store_episode"]:
+
+        struc_episodic = [
+            Document(
+                page_content=state["episode"],
+                metadata={
+                    "conversation_id": state["conversation_id"],
+                    "episode_type": state["episode_type"],
+                    "created_at": datetime.now().isoformat(),
+                    "memory_type": "episodic"
+                }
+            )
+        ]
 
         episodic_memory.add_documents(struc_episodic)
 
         print("episodic memory stored perfectly")
+
+    return state
 
 def episodic_mem_ret(state: GraphState):
 
@@ -388,12 +434,14 @@ class Episode(BaseModel):
         description="A concise summary of the important expieriences from the current conversation that should be stored in episodic memory")
 
     episode_type: Literal[
-        "achievement",
-        "learning",
-        "preference",
-        "goal",
-        "project",
-        "other"]
+            "career",
+            "achievement",
+            "learning",
+            "goal",
+            "project",
+            "preference",
+            "other"
+        ]
 
 episode_llm = llm.with_structured_output(Episode)
 
@@ -568,42 +616,47 @@ QUERY_REWRITE_PROMPT = """
 
 def query_rewriter(state: GraphState):
 
+    memory = ""
+
+    if state["memory_retrieval"]:
+        memory = state["hybrid_memory"]
+
     prompt = QUERY_REWRITE_PROMPT.format(
-        memory = state["hybrid_memory"],
-        question = state["user_query"]
+        memory=memory,
+        question=state["user_query"]
     )
 
     response = llm.invoke(prompt)
 
     state["rewritten_query"] = response.content.strip()
 
-    print("\n Rewritten Query:")
+    print("\nRewritten Query:")
     print(state["rewritten_query"])
 
     return state
 
-MEMORY_KEYWORDS = {
-    "continue",
-    "previous",
-    "earlier",
-    "last",
-    "remember",
-    "again",
-    "same",
-    "before",
-    "our"
-}
+# MEMORY_KEYWORDS = {
+#     "continue",
+#     "previous",
+#     "earlier",
+#     "last",
+#     "remember",
+#     "again",
+#     "same",
+#     "before",
+#     "our"
+# }
 
-PREFERENCE_KEYWORDS = {
-    "prefer",
-    "favorite",
-    "usually",
-    "always",
-    "my",
-    "preference"
-}
+# PREFERENCE_KEYWORDS = {
+#     "prefer",
+#     "favorite",
+#     "usually",
+#     "always",
+#     "my",
+#     "preference"
+# }
 
-def memory_orchestrator(state: GraphState):
+# def memory_orchestrator(state: GraphState):
 
     query = state["user_query"].lower()
 
@@ -754,6 +807,36 @@ decompose_prompt = """
     Your job is to convert the user's question into the minimum number of
     independent retrieval queries.
 
+    IMPORTANT MEMORY RULE
+
+    Conversation memory may be used only to resolve
+    missing references or contextual dependencies.
+
+    Do NOT convert user profile information,
+    career information, certifications, skills,
+    projects, or preferences into separate retrieval
+    queries unless the user's current question explicitly
+    asks about that information.
+
+    Example:
+
+    Memory:
+    User is an AI engineer.
+    User completed MLOps certification.
+
+    Question:
+    What is an AI agent?
+
+    Return:
+
+    What is an AI agent?
+
+    NOT:
+
+    What skills does an AI engineer need?
+    What is MLOps certification?
+    How does MLOps relate to AI agents?
+
     Rules:
 
     Before generating sub-queries,
@@ -835,7 +918,7 @@ def decompose_query(state: GraphState):
 
     prompt = decompose_prompt.format(
         query = state["rewritten_query"],
-        memory = state["hybrid_memory"],
+        memory = state.get("hybrid_memory", []),
         few_shot_examples = few_shot_examples
     )
 
@@ -1309,6 +1392,50 @@ def memory_fusion(state: GraphState):
 
     return state
 
+memory_prompt = """
+        You are a conversational AI assistant.
+
+        Answer the user's question using ONLY the user's stored memory.
+
+        Do not invent information.
+
+        If the memory does not contain enough information,
+        say:
+
+        "I don't have enough information in my memory."
+
+        User Question:
+        {query}
+
+        Stored Memory:
+        {memory}
+
+        Answer:
+"""
+
+def memory_retrieval_builder(state: GraphState):
+
+    prompt = memory_prompt.format(
+        query = state["user_query"],
+        memory = state["hybrid_memory"]
+    )
+
+    response = llm.invoke(prompt)
+
+    state["final_answer"] = response.content.strip()
+
+    return state
+
+def route_after_memory_fusion(state: GraphState):
+
+    if state["knowledge_retrieval"]:
+        return "knowledge"
+
+    if state["memory_retrieval"]:
+        return "memory"
+
+    return "no_action"
+
 ANSWER_PROMPT = """
     You are a Retrieval-Augmented AI Assistant.
 
@@ -1370,7 +1497,7 @@ def prompt_builder(state: GraphState):
 
     prompt = ANSWER_PROMPT.format(
 
-        hybrid_memory=state["hybrid_memory"],
+        hybrid_memory=state.get("hybrid_memory", []),
 
         context=state["context"],
 
@@ -1411,8 +1538,6 @@ def show_final_answer(state: GraphState):
 
 workflow = StateGraph(GraphState)
 
-workflow = StateGraph(GraphState)
-
 # ------------------------------------------------------------------
 # Nodes
 # ------------------------------------------------------------------
@@ -1423,6 +1548,8 @@ workflow.add_node("Intent_Classifier", Intent_Classifier)
 workflow.add_node("memory_retrieval", memory_retrieval)
 workflow.add_node("episodic_mem_ret", episodic_mem_ret)
 workflow.add_node("memory_fusion", memory_fusion)
+workflow.add_node("route_after_memory_fusion", route_after_memory_fusion)
+workflow.add_node("memory_retrieval_builder", memory_retrieval_builder)
 workflow.add_node("query_rewriter", query_rewriter)
 workflow.add_node("retrieval_fewshot_examples", retrieval_fewshot_examples)
 workflow.add_node("decompose_query", decompose_query)
@@ -1464,22 +1591,37 @@ workflow.add_conditional_edges(
     "Intent_Classifier",
     route_int_query,
     {
-        "knowledge_pipeline": "memory_retrieval",
-        "memory_pipeline": "memory_candidate",
+        "knowledge_pipeline": "query_rewriter",
+        "hybrid_memory_pipeline": "memory_retrieval",
+        "memory_retrieval_pipeline": "memory_retrieval",
+        "memory_update_pipeline": "memory_candidate",
         "no_action": "show_final_answer",
     },
 )
 
-
-# ------------------------------------------------------------------
-# Knowledge Pipeline
-# ------------------------------------------------------------------
+# ============================================================
+# MEMORY RETRIEVAL
+# ============================================================
 
 workflow.add_edge("memory_retrieval", "episodic_mem_ret")
 
 workflow.add_edge("episodic_mem_ret", "memory_fusion")
 
-workflow.add_edge("memory_fusion", "query_rewriter")
+# ============================================================
+# MEMORY → KNOWLEDGE OR MEMORY ANSWER
+# ============================================================
+
+workflow.add_conditional_edges("memory_fusion", 
+                               route_after_memory_fusion,{
+                                            "knowledge": "query_rewriter",
+                                            "memory": "memory_retrieval_builder",
+                                            "no_action": "show_final_answer",
+                                    })
+
+# ============================================================
+# RAG PIPELINE
+# ============================================================
+
 
 workflow.add_edge("query_rewriter", "retrieval_fewshot_examples")
 
@@ -1529,7 +1671,13 @@ workflow.add_edge("memory_candidate", "importance_scorer")
 
 workflow.add_edge("importance_scorer", "episodic_writer")
 
-workflow.add_edge("episodic_writer", "show_final_answer")
+workflow.add_edge("episodic_writer","show_final_answer")
+
+# ============================================================
+# MEMORY-ONLY ANSWER
+# ============================================================
+
+workflow.add_edge("memory_retrieval_builder", "show_final_answer")
 
 
 # ------------------------------------------------------------------
